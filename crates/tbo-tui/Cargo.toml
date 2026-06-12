@@ -21,6 +21,7 @@ workspace = true
 [dependencies]
 tbo-core = { workspace = true }
 tbo-auth = { workspace = true }
+tbo-operator-client = { workspace = true }
 ratatui = { workspace = true }
 crossterm = { workspace = true }
 tokio = { workspace = true }
