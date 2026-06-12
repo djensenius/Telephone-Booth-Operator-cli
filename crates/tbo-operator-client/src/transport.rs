@@ -67,6 +67,33 @@ pub trait SseTransport: HttpTransport {
     ) -> impl Future<Output = Result<ByteStream>> + Send;
 }
 
+/// Performs authenticated mutating requests against the operator API.
+///
+/// Separate from [`HttpTransport`] (the read transport) so the read-only
+/// surface and its test fakes stay simple; production code implements both on
+/// [`ReqwestTransport`]. Bodies are pre-serialized JSON strings; `None` sends
+/// no body (e.g. action endpoints that take only a path).
+pub trait WriteTransport: HttpTransport {
+    /// Issue a `POST` to `path` with the given query pairs, optional bearer
+    /// token, and an optional JSON request body.
+    fn post(
+        &self,
+        path: &str,
+        query: &[(&str, String)],
+        bearer: Option<&str>,
+        json_body: Option<&str>,
+    ) -> impl Future<Output = Result<HttpResponse>> + Send;
+
+    /// Issue a `DELETE` to `path` with the given query pairs and optional
+    /// bearer token.
+    fn delete(
+        &self,
+        path: &str,
+        query: &[(&str, String)],
+        bearer: Option<&str>,
+    ) -> impl Future<Output = Result<HttpResponse>> + Send;
+}
+
 /// A [`reqwest`]-backed transport using rustls.
 #[derive(Debug, Clone)]
 pub struct ReqwestTransport {
@@ -113,16 +140,7 @@ impl HttpTransport for ReqwestTransport {
         if let Some(token) = bearer {
             request = request.bearer_auth(token);
         }
-        let response = request
-            .send()
-            .await
-            .map_err(|err| OperatorError::Transport(err.to_string()))?;
-        let status = response.status().as_u16();
-        let body = response
-            .text()
-            .await
-            .map_err(|err| OperatorError::Transport(err.to_string()))?;
-        Ok(HttpResponse { status, body })
+        send_text(request).await
     }
 }
 
@@ -164,4 +182,60 @@ impl SseTransport for ReqwestTransport {
             .boxed();
         Ok(stream)
     }
+}
+
+impl WriteTransport for ReqwestTransport {
+    async fn post(
+        &self,
+        path: &str,
+        query: &[(&str, String)],
+        bearer: Option<&str>,
+        json_body: Option<&str>,
+    ) -> Result<HttpResponse> {
+        let url = format!("{}{path}", self.base_url.trim_end_matches('/'));
+        let mut request = self.client.post(url);
+        if !query.is_empty() {
+            request = request.query(query);
+        }
+        if let Some(token) = bearer {
+            request = request.bearer_auth(token);
+        }
+        if let Some(body) = json_body {
+            request = request
+                .header(reqwest::header::CONTENT_TYPE, "application/json")
+                .body(body.to_owned());
+        }
+        send_text(request).await
+    }
+
+    async fn delete(
+        &self,
+        path: &str,
+        query: &[(&str, String)],
+        bearer: Option<&str>,
+    ) -> Result<HttpResponse> {
+        let url = format!("{}{path}", self.base_url.trim_end_matches('/'));
+        let mut request = self.client.delete(url);
+        if !query.is_empty() {
+            request = request.query(query);
+        }
+        if let Some(token) = bearer {
+            request = request.bearer_auth(token);
+        }
+        send_text(request).await
+    }
+}
+
+/// Send a prepared request and read the response into an [`HttpResponse`].
+async fn send_text(request: reqwest::RequestBuilder) -> Result<HttpResponse> {
+    let response = request
+        .send()
+        .await
+        .map_err(|err| OperatorError::Transport(err.to_string()))?;
+    let status = response.status().as_u16();
+    let body = response
+        .text()
+        .await
+        .map_err(|err| OperatorError::Transport(err.to_string()))?;
+    Ok(HttpResponse { status, body })
 }

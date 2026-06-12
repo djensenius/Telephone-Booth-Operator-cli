@@ -17,6 +17,7 @@ use crate::data::{
 use crate::event::{AppEvent, EventLoop};
 use crate::tui::Tui;
 use crate::ui;
+use crate::ui::modal::{Intent, Modal, ModalDecision};
 use crate::ui::screens::Screen;
 use crate::ui::theme::Theme;
 use crate::ui::toast::Toasts;
@@ -38,6 +39,7 @@ pub struct App {
     events: EventsController,
     stats: StatsController,
     system: SystemController,
+    modal: Option<Modal>,
     should_quit: bool,
 }
 
@@ -84,6 +86,7 @@ impl App {
             events: EventsController::new(api.clone()),
             stats: StatsController::new(api.clone()),
             system: SystemController::new(api),
+            modal: None,
             should_quit: false,
         })
     }
@@ -189,6 +192,12 @@ impl App {
         &self.system
     }
 
+    /// The active modal overlay, when one is open.
+    #[must_use]
+    pub fn modal(&self) -> Option<&Modal> {
+        self.modal.as_ref()
+    }
+
     /// Run the draw/event loop until the user quits.
     pub async fn run(mut self, terminal: &mut Tui) -> Result<()> {
         let mut events = EventLoop::new(TICK);
@@ -199,6 +208,7 @@ impl App {
                     self.auth.drain(&mut self.toasts);
                     self.status.tick(self.screen == Screen::Status);
                     self.messages.tick(self.screen == Screen::Messages);
+                    self.drain_message_actions();
                     self.questions.tick(self.screen == Screen::Questions);
                     self.sessions.tick(self.screen == Screen::Sessions);
                     self.events.tick(self.screen == Screen::Events);
@@ -220,6 +230,11 @@ impl App {
             self.should_quit = true;
             return;
         }
+        // An open modal captures all other input until it is dismissed.
+        if self.modal.is_some() {
+            self.handle_modal_key(key);
+            return;
+        }
         match key.code {
             KeyCode::Char('q') => self.should_quit = true,
             KeyCode::Esc => {
@@ -239,12 +254,110 @@ impl App {
             KeyCode::Char('f' | 'F') if self.screen == Screen::Events => {
                 self.events.toggle_follow();
             }
+            KeyCode::Char('a' | 'A') if self.screen == Screen::Messages => {
+                self.message_action(MessagesController::approve_selected);
+            }
+            KeyCode::Char('x' | 'X') if self.screen == Screen::Messages => {
+                self.message_action(MessagesController::reject_selected);
+            }
+            KeyCode::Char('t' | 'T') if self.screen == Screen::Messages => {
+                self.message_action(MessagesController::retranscribe_selected);
+            }
+            KeyCode::Char('m' | 'M') if self.screen == Screen::Messages => {
+                self.message_action(MessagesController::remoderate_selected);
+            }
+            KeyCode::Char('g' | 'G') if self.screen == Screen::Messages => {
+                self.open_translation_prompt();
+            }
+            KeyCode::Char('d' | 'D') if self.screen == Screen::Messages => {
+                self.open_delete_confirm();
+            }
             KeyCode::Char('l' | 'L') if self.screen == Screen::Settings => self.begin_login(),
             KeyCode::Char('o' | 'O') if self.screen == Screen::Settings => {
                 self.auth.sign_out(&mut self.toasts);
             }
             KeyCode::Char(c) if c.is_ascii_digit() && c != '0' => self.jump_to_digit(c),
             _ => {}
+        }
+    }
+
+    /// Route a key to the active modal, dispatching its action on confirmation.
+    fn handle_modal_key(&mut self, key: KeyEvent) {
+        let Some(modal) = self.modal.as_mut() else {
+            return;
+        };
+        match modal.on_key(key) {
+            ModalDecision::Stay => {}
+            ModalDecision::Cancel => self.modal = None,
+            ModalDecision::Confirm => {
+                if let Some(modal) = self.modal.take() {
+                    self.dispatch_modal(&modal);
+                }
+            }
+        }
+    }
+
+    /// Perform the action a confirmed modal represents.
+    fn dispatch_modal(&mut self, modal: &Modal) {
+        match modal.intent() {
+            Intent::DeleteMessage => self.message_action(MessagesController::delete_selected),
+            Intent::TranslateMessage => {
+                let text = modal.input().to_owned();
+                self.message_action(move |m| m.submit_translation(text));
+            }
+        }
+    }
+
+    /// Run a message write action, guarding against overlapping requests and
+    /// nudging when there is nothing selected.
+    fn message_action(&mut self, action: impl FnOnce(&mut MessagesController)) {
+        if self.messages.is_action_in_flight() {
+            self.toasts.warn("An action is already in progress.");
+            return;
+        }
+        if self.messages.selected_message().is_none() {
+            self.toasts.info("Select a message first.");
+            return;
+        }
+        action(&mut self.messages);
+    }
+
+    /// Open a confirmation modal for deleting the selected message.
+    fn open_delete_confirm(&mut self) {
+        if self.messages.selected_message().is_none() {
+            self.toasts.info("Select a message first.");
+            return;
+        }
+        self.modal = Some(Modal::confirm(
+            "Delete message",
+            "Permanently delete the selected message? This cannot be undone.",
+            Intent::DeleteMessage,
+        ));
+    }
+
+    /// Open a text prompt for submitting a translation of the selected message.
+    fn open_translation_prompt(&mut self) {
+        if self.messages.selected_message().is_none() {
+            self.toasts.info("Select a message first.");
+            return;
+        }
+        self.modal = Some(Modal::prompt(
+            "Submit translation",
+            "English translation",
+            Intent::TranslateMessage,
+        ));
+    }
+
+    /// Surface completed message-action outcomes as toasts, reloading the list
+    /// after a successful change.
+    fn drain_message_actions(&mut self) {
+        for outcome in self.messages.drain_actions() {
+            if outcome.ok {
+                self.toasts.info(outcome.message);
+                self.messages.refresh();
+            } else {
+                self.toasts.error(outcome.message);
+            }
         }
     }
 

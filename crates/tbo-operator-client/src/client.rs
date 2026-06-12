@@ -1,5 +1,7 @@
-//! The operator API client: typed read endpoints over an [`HttpTransport`].
+//! The operator API client: typed read endpoints over an [`HttpTransport`]
+//! and mutating actions over a [`WriteTransport`].
 
+use serde::Serialize;
 use serde::de::DeserializeOwned;
 use std::collections::VecDeque;
 use time::OffsetDateTime;
@@ -9,14 +11,17 @@ use futures::stream::{BoxStream, Stream, StreamExt};
 
 use tbo_core::domain::{
     BoothEventList, BoothEventRecord, BoothStatus, BoothSystemSnapshotList, CallSessionDetail,
-    CallSessionList, Message, MessageList, MessageStatus, OperatorMe, QuestionList, QuestionStatus,
-    StatsOverview, StatsWindow, StatusHistory, TranscriptionList,
+    CallSessionList, Message, MessageDecision, MessageDecisionKind, MessageList, MessageStatus,
+    Moderation, OperatorMe, QuestionList, QuestionStatus, StatsOverview, StatsWindow,
+    StatusHistory, Transcription, TranscriptionList, TranslationSubmit,
 };
 
 use crate::error::{OperatorError, Result};
 use crate::sse::SseParser;
 use crate::token::{StaticTokenProvider, TokenProvider};
-use crate::transport::{HttpTransport, ReqwestTransport, SseTransport};
+use crate::transport::{
+    HttpResponse, HttpTransport, ReqwestTransport, SseTransport, WriteTransport,
+};
 
 /// Filter and pagination options for [`OperatorClient::events`] and the live
 /// event stream.
@@ -227,16 +232,24 @@ impl<T: HttpTransport, A: TokenProvider> OperatorClient<T, A> {
             return Err(OperatorError::Unauthenticated);
         }
         let response = self.transport.get(path, query, bearer.as_deref()).await?;
-        match response.status {
-            _ if response.is_success() => serde_json::from_str(&response.body)
-                .map_err(|err| OperatorError::Decode(err.to_string())),
-            401 | 403 => Err(OperatorError::Unauthorized(response.status)),
-            404 => Err(OperatorError::NotFound),
-            status => Err(OperatorError::Http {
-                status,
-                body: response.body,
-            }),
+        if response.is_success() {
+            serde_json::from_str(&response.body)
+                .map_err(|err| OperatorError::Decode(err.to_string()))
+        } else {
+            Err(status_error(response))
         }
+    }
+}
+
+/// Map a non-success [`HttpResponse`] to the matching [`OperatorError`].
+fn status_error(response: HttpResponse) -> OperatorError {
+    match response.status {
+        401 | 403 => OperatorError::Unauthorized(response.status),
+        404 => OperatorError::NotFound,
+        status => OperatorError::Http {
+            status,
+            body: response.body,
+        },
     }
 }
 
@@ -275,6 +288,140 @@ impl<T: SseTransport, A: TokenProvider> OperatorClient<T, A> {
             .get_sse("/v1/events/stream", &query, bearer.as_deref())
             .await?;
         Ok(decode_event_records(bytes).boxed())
+    }
+}
+
+impl<T: WriteTransport, A: TokenProvider> OperatorClient<T, A> {
+    /// Record an operator moderation decision
+    /// (`POST /v1/messages/{id}/decision`).
+    ///
+    /// Approves or rejects the message, optionally attaching `notes`. The
+    /// updated [`Message`] is returned.
+    ///
+    /// # Errors
+    /// Returns [`OperatorError::Unauthenticated`] when signed out, or an
+    /// HTTP/transport error (the server replies `409` when the message is still
+    /// uploading and therefore not yet decidable).
+    pub async fn decide_message(
+        &self,
+        id: &str,
+        decision: MessageDecisionKind,
+        notes: Option<String>,
+    ) -> Result<Message> {
+        let body = MessageDecision { decision, notes };
+        self.post_json(&format!("/v1/messages/{id}/decision"), &body)
+            .await
+    }
+
+    /// Attach an operator-supplied translation to a message's latest succeeded
+    /// transcription (`POST /v1/messages/{id}/translation`).
+    ///
+    /// Returns the updated [`Transcription`].
+    ///
+    /// # Errors
+    /// Returns [`OperatorError::Unauthenticated`] when signed out, or an
+    /// HTTP/transport error (the server replies `409` when the message has no
+    /// succeeded transcription to translate).
+    pub async fn submit_translation(
+        &self,
+        id: &str,
+        translated_text: String,
+        translated_language: Option<String>,
+    ) -> Result<Transcription> {
+        let body = TranslationSubmit {
+            translated_text,
+            translated_language,
+        };
+        self.post_json(&format!("/v1/messages/{id}/translation"), &body)
+            .await
+    }
+
+    /// Queue a fresh transcription attempt for a message
+    /// (`POST /v1/messages/{id}/transcribe`).
+    ///
+    /// Returns the newly created [`Transcription`] (server status `202`).
+    ///
+    /// # Errors
+    /// Returns [`OperatorError::Unauthenticated`] when signed out, or an
+    /// HTTP/transport error (the server replies `409` when an attempt is
+    /// already pending).
+    pub async fn retranscribe_message(&self, id: &str) -> Result<Transcription> {
+        self.post_empty(&format!("/v1/messages/{id}/transcribe"))
+            .await
+    }
+
+    /// Queue a fresh moderation pass for a message
+    /// (`POST /v1/messages/{id}/moderate`).
+    ///
+    /// Returns the newly created [`Moderation`] (server status `202`).
+    ///
+    /// # Errors
+    /// Returns [`OperatorError::Unauthenticated`] when signed out, or an
+    /// HTTP/transport error (the server replies `409` when there is no
+    /// succeeded transcription to moderate).
+    pub async fn remoderate_message(&self, id: &str) -> Result<Moderation> {
+        self.post_empty(&format!("/v1/messages/{id}/moderate"))
+            .await
+    }
+
+    /// Permanently delete a message (`DELETE /v1/messages/{id}`).
+    ///
+    /// # Errors
+    /// Returns [`OperatorError::Unauthenticated`] when signed out, or an
+    /// HTTP/transport error.
+    pub async fn delete_message(&self, id: &str) -> Result<()> {
+        self.delete_no_content(&format!("/v1/messages/{id}")).await
+    }
+
+    /// Resolve the bearer token, failing fast when signed out.
+    async fn require_bearer(&self) -> Result<String> {
+        self.auth
+            .access_token()
+            .await?
+            .ok_or(OperatorError::Unauthenticated)
+    }
+
+    /// `POST` a JSON body and decode the JSON response.
+    async fn post_json<B: Serialize + Sync, R: DeserializeOwned>(
+        &self,
+        path: &str,
+        body: &B,
+    ) -> Result<R> {
+        let json = serde_json::to_string(body)
+            .map_err(|err| OperatorError::InvalidRequest(err.to_string()))?;
+        let bearer = self.require_bearer().await?;
+        let response = self
+            .transport
+            .post(path, &[], Some(&bearer), Some(&json))
+            .await?;
+        decode_success(response)
+    }
+
+    /// `POST` with no request body and decode the JSON response.
+    async fn post_empty<R: DeserializeOwned>(&self, path: &str) -> Result<R> {
+        let bearer = self.require_bearer().await?;
+        let response = self.transport.post(path, &[], Some(&bearer), None).await?;
+        decode_success(response)
+    }
+
+    /// `DELETE` an endpoint that returns no content on success.
+    async fn delete_no_content(&self, path: &str) -> Result<()> {
+        let bearer = self.require_bearer().await?;
+        let response = self.transport.delete(path, &[], Some(&bearer)).await?;
+        if response.is_success() {
+            Ok(())
+        } else {
+            Err(status_error(response))
+        }
+    }
+}
+
+/// Decode a JSON success body, or map a non-success status to an error.
+fn decode_success<R: DeserializeOwned>(response: HttpResponse) -> Result<R> {
+    if response.is_success() {
+        serde_json::from_str(&response.body).map_err(|err| OperatorError::Decode(err.to_string()))
+    } else {
+        Err(status_error(response))
     }
 }
 
@@ -338,9 +485,11 @@ mod tests {
     /// A recorded request, captured for assertions.
     #[derive(Debug, Clone)]
     struct RecordedCall {
+        method: &'static str,
         path: String,
         query: Vec<(String, String)>,
         bearer: Option<String>,
+        body: Option<String>,
     }
 
     #[derive(Default)]
@@ -368,6 +517,31 @@ mod tests {
         fn calls(&self) -> Vec<RecordedCall> {
             self.state.lock().unwrap().calls.clone()
         }
+
+        fn record(
+            &self,
+            method: &'static str,
+            path: &str,
+            query: &[(&str, String)],
+            bearer: Option<&str>,
+            body: Option<&str>,
+        ) -> Result<HttpResponse> {
+            let mut state = self.state.lock().unwrap();
+            state.calls.push(RecordedCall {
+                method,
+                path: path.to_owned(),
+                query: query
+                    .iter()
+                    .map(|(k, v)| ((*k).to_owned(), v.clone()))
+                    .collect(),
+                bearer: bearer.map(str::to_owned),
+                body: body.map(str::to_owned),
+            });
+            state
+                .responses
+                .pop_front()
+                .ok_or_else(|| OperatorError::Transport("no canned response".to_owned()))
+        }
     }
 
     impl HttpTransport for FakeTransport {
@@ -377,19 +551,28 @@ mod tests {
             query: &[(&str, String)],
             bearer: Option<&str>,
         ) -> Result<HttpResponse> {
-            let mut state = self.state.lock().unwrap();
-            state.calls.push(RecordedCall {
-                path: path.to_owned(),
-                query: query
-                    .iter()
-                    .map(|(k, v)| ((*k).to_owned(), v.clone()))
-                    .collect(),
-                bearer: bearer.map(str::to_owned),
-            });
-            state
-                .responses
-                .pop_front()
-                .ok_or_else(|| OperatorError::Transport("no canned response".to_owned()))
+            self.record("GET", path, query, bearer, None)
+        }
+    }
+
+    impl WriteTransport for FakeTransport {
+        async fn post(
+            &self,
+            path: &str,
+            query: &[(&str, String)],
+            bearer: Option<&str>,
+            json_body: Option<&str>,
+        ) -> Result<HttpResponse> {
+            self.record("POST", path, query, bearer, json_body)
+        }
+
+        async fn delete(
+            &self,
+            path: &str,
+            query: &[(&str, String)],
+            bearer: Option<&str>,
+        ) -> Result<HttpResponse> {
+            self.record("DELETE", path, query, bearer, None)
         }
     }
 
@@ -569,6 +752,134 @@ mod tests {
 
         let unauthorized = client.message("denied").await.unwrap_err();
         assert!(matches!(unauthorized, OperatorError::Unauthorized(401)));
+    }
+
+    fn message_body(id: &str) -> String {
+        format!(
+            r#"{{"id":"{id}","status":"approved","createdAt":"2026-01-01T00:00:00Z","audio":{{"url":"https://example/{id}.flac","sha256":"{id}","durationMs":1000}}}}"#
+        )
+    }
+
+    #[tokio::test]
+    async fn decide_message_posts_decision_body() {
+        let transport = FakeTransport::with_responses(vec![ok(&message_body("m1"))]);
+        let client = authed(transport.clone());
+
+        let message = client
+            .decide_message(
+                "m1",
+                MessageDecisionKind::Approve,
+                Some("looks good".to_owned()),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(message.id, "m1");
+        assert_eq!(message.status, MessageStatus::Approved);
+        let calls = transport.calls();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].method, "POST");
+        assert_eq!(calls[0].path, "/v1/messages/m1/decision");
+        assert_eq!(calls[0].bearer.as_deref(), Some("token-123"));
+        let body = calls[0].body.as_deref().unwrap();
+        assert_eq!(body, r#"{"decision":"approve","notes":"looks good"}"#);
+    }
+
+    #[tokio::test]
+    async fn decide_message_omits_absent_notes() {
+        let transport = FakeTransport::with_responses(vec![ok(&message_body("m1"))]);
+        let client = authed(transport.clone());
+
+        client
+            .decide_message("m1", MessageDecisionKind::Reject, None)
+            .await
+            .unwrap();
+
+        let calls = transport.calls();
+        assert_eq!(calls[0].body.as_deref(), Some(r#"{"decision":"reject"}"#));
+    }
+
+    #[tokio::test]
+    async fn submit_translation_posts_text_body() {
+        let body = r#"{"id":"t1","messageId":"m1","provider":"openai","status":"succeeded","createdAt":"2026-01-01T00:00:00Z"}"#;
+        let transport = FakeTransport::with_responses(vec![ok(body)]);
+        let client = authed(transport.clone());
+
+        let transcription = client
+            .submit_translation("m1", "hello there".to_owned(), Some("en".to_owned()))
+            .await
+            .unwrap();
+
+        assert_eq!(transcription.id, "t1");
+        let calls = transport.calls();
+        assert_eq!(calls[0].method, "POST");
+        assert_eq!(calls[0].path, "/v1/messages/m1/translation");
+        assert_eq!(
+            calls[0].body.as_deref(),
+            Some(r#"{"translatedText":"hello there","translatedLanguage":"en"}"#)
+        );
+    }
+
+    #[tokio::test]
+    async fn retranscribe_posts_without_body() {
+        let body = r#"{"id":"t2","messageId":"m1","provider":"openai","status":"pending","createdAt":"2026-01-01T00:00:00Z"}"#;
+        let transport = FakeTransport::with_responses(vec![HttpResponse {
+            status: 202,
+            body: body.to_owned(),
+        }]);
+        let client = authed(transport.clone());
+
+        let transcription = client.retranscribe_message("m1").await.unwrap();
+
+        assert_eq!(transcription.id, "t2");
+        let calls = transport.calls();
+        assert_eq!(calls[0].method, "POST");
+        assert_eq!(calls[0].path, "/v1/messages/m1/transcribe");
+        assert!(calls[0].body.is_none());
+    }
+
+    #[tokio::test]
+    async fn delete_message_succeeds_on_no_content() {
+        let transport = FakeTransport::with_responses(vec![HttpResponse {
+            status: 204,
+            body: String::new(),
+        }]);
+        let client = authed(transport.clone());
+
+        client.delete_message("m1").await.unwrap();
+
+        let calls = transport.calls();
+        assert_eq!(calls[0].method, "DELETE");
+        assert_eq!(calls[0].path, "/v1/messages/m1");
+        assert!(calls[0].body.is_none());
+    }
+
+    #[tokio::test]
+    async fn write_action_maps_conflict_status() {
+        let transport = FakeTransport::with_responses(vec![HttpResponse {
+            status: 409,
+            body: r#"{"error":"message_not_decidable"}"#.to_owned(),
+        }]);
+        let client = authed(transport);
+
+        let err = client
+            .decide_message("m1", MessageDecisionKind::Approve, None)
+            .await
+            .unwrap_err();
+
+        assert!(matches!(err, OperatorError::Http { status: 409, .. }));
+    }
+
+    #[tokio::test]
+    async fn write_action_requires_auth_when_signed_out() {
+        let transport = FakeTransport::with_responses(vec![]);
+        let client =
+            OperatorClient::with_transport(transport.clone(), StaticTokenProvider::anonymous());
+
+        let err = client.delete_message("m1").await.unwrap_err();
+
+        assert!(matches!(err, OperatorError::Unauthenticated));
+        assert!(transport.calls().is_empty());
     }
 
     /// An SSE transport that replays canned byte chunks and records the query.
