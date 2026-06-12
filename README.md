@@ -67,6 +67,23 @@ cargo build
 cargo run -p tbo-tui   # runs the `tb-operator` binary
 ```
 
+## Usage
+
+```sh
+tb-operator                 # launch the console with the default config
+tb-operator --config FILE   # use an alternate TOML config file
+tb-operator --version       # print the version and exit
+```
+
+Configuration is read from a TOML file under the platform config directory
+(e.g. `~/.config/tb-operator/config.toml` on Linux, or
+`~/Library/Application Support/io.telephonebooth.tb-operator/config.toml` on
+macOS). A fresh install works out of the box against the production operator
+API; add booths there to enable the System Health and Debug screens.
+
+Keys: `Tab`/`→` next screen, `Shift-Tab`/`←` previous screen, `1`–`9` jump to a
+screen, `q`/`Esc` (or `Ctrl-C`) quit.
+
 ## Installation
 
 ### Homebrew (macOS, Apple Silicon)

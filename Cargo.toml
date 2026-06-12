@@ -74,3 +74,14 @@ thiserror = "2"
 time = { version = "0.3", features = ["serde-well-known", "formatting", "parsing", "macros"] }
 toml = "0.8"
 directories = "5"
+
+# TUI + async runtime + CLI (mirrors the booth repo's versions where shared)
+ratatui = "0.29"
+crossterm = { version = "0.28", features = ["event-stream"] }
+tokio = { version = "1", features = ["full"] }
+futures = "0.3"
+clap = { version = "4", features = ["derive"] }
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing-appender = "0.2"
