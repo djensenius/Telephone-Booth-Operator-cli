@@ -118,6 +118,9 @@ Press **`O`** on the Settings screen to sign out and clear the cached token. The
 issuer, client id, and scopes can be overridden in the config file; the defaults
 target the production Telephone-Booth Authentik tenant.
 
+To configure your own Authentik tenant (or reuse the mobile app's provider for
+the console's device-code flow), see [`docs/authentik-setup.md`](./docs/authentik-setup.md).
+
 ## Configuration
 
 Configuration is read from a TOML file under the platform config directory
