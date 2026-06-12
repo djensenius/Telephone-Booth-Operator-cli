@@ -7,6 +7,7 @@
 //! task performs the request and the UI thread applies the result on each tick
 //! via `drain`, so rendering never blocks on the network.
 
+mod events;
 mod messages;
 mod questions;
 mod sessions;
@@ -22,6 +23,7 @@ use time::OffsetDateTime;
 use tbo_auth::{ReqwestTransport as AuthTransport, SessionManager, TokenStore};
 use tbo_operator_client::{OperatorClient, OperatorError, ReqwestTransport, Result, TokenProvider};
 
+pub use events::EventsController;
 pub use messages::MessagesController;
 pub use questions::QuestionsController;
 pub use sessions::SessionsController;
