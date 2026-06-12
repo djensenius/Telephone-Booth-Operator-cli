@@ -76,33 +76,9 @@ pub struct CallSessionList {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CallSessionDetail {
-    /// Session id.
-    pub id: String,
-    /// Booth identifier.
-    pub booth_id: String,
-    /// Boot session id.
-    pub boot_id: String,
-    /// When the call started.
-    #[serde(with = "time::serde::rfc3339")]
-    pub started_at: OffsetDateTime,
-    /// When the call ended, if it has.
-    #[serde(default, with = "time::serde::rfc3339::option")]
-    pub ended_at: Option<OffsetDateTime>,
-    /// Digits dialed during the call.
-    #[serde(default)]
-    pub digits_dialed: Option<String>,
-    /// Outcome, once known.
-    #[serde(default)]
-    pub outcome: Option<CallOutcome>,
-    /// Recording produced by the call, if any.
-    #[serde(default)]
-    pub recording_id: Option<String>,
-    /// Call duration in milliseconds.
-    #[serde(default)]
-    pub duration_ms: Option<i64>,
-    /// Booth client version captured from `call_started`.
-    #[serde(default)]
-    pub version: Option<String>,
+    /// The session fields (flattened onto the same JSON object).
+    #[serde(flatten)]
+    pub session: CallSession,
     /// Events belonging to this session, in order.
     pub events: Vec<BoothEventRecord>,
 }

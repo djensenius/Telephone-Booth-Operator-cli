@@ -4,8 +4,8 @@
 
 use tbo_core::config::{Config, DEFAULT_OPERATOR_BASE_URL};
 use tbo_core::domain::{
-    BoothState, BoothStatus, Message, MessageStatus, RuntimeMode, StatsOverview, StatsWindow,
-    WsEnvelope,
+    BoothState, BoothStatus, CallSessionDetail, Message, MessageStatus, RuntimeMode, StatsOverview,
+    StatsWindow, WsEnvelope,
 };
 
 #[test]
@@ -188,4 +188,30 @@ fn config_save_then_load() {
     assert_eq!(loaded.operator.base_url, "https://api.example.test");
 
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn call_session_detail_flattens_session_fields() {
+    let json = r#"{
+        "id": "55555555-5555-5555-5555-555555555555",
+        "boothId": "booth-1",
+        "bootId": "66666666-6666-6666-6666-666666666666",
+        "startedAt": "2024-06-01T12:00:00Z",
+        "endedAt": "2024-06-01T12:01:00Z",
+        "digitsDialed": "1234",
+        "outcome": "recording_completed",
+        "recordingId": "rec-1",
+        "durationMs": 60000,
+        "version": "0.3.2",
+        "events": []
+    }"#;
+    let detail: CallSessionDetail = serde_json::from_str(json).unwrap();
+    assert_eq!(detail.session.booth_id, "booth-1");
+    assert_eq!(detail.session.digits_dialed.as_deref(), Some("1234"));
+    assert!(detail.events.is_empty());
+
+    // The flattened fields must serialize back onto the same object.
+    let round = serde_json::to_string(&detail).unwrap();
+    assert!(round.contains("\"bootId\""));
+    assert!(round.contains("\"events\""));
 }
