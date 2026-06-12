@@ -73,10 +73,11 @@ fn status_hints(app: &App) -> &'static str {
     if app.auth().is_in_progress() {
         return "  Esc cancel login | Tab/Right next | 1-9 jump | q quit";
     }
-    if app.screen() == Screen::Settings {
-        return "  L log in | O sign out | Tab/Right next | 1-9 jump | q quit";
+    match app.screen() {
+        Screen::Settings => "  L log in | O sign out | Tab/Right next | 1-9 jump | q quit",
+        Screen::Status => "  r refresh | Tab/Right next | Shift-Tab/Left prev | 1-9 jump | q quit",
+        _ => "  Tab/Right next | Shift-Tab/Left prev | 1-9 jump | q quit",
     }
-    "  Tab/Right next | Shift-Tab/Left prev | 1-9 jump | q quit"
 }
 
 /// Render the toast overlay anchored to the bottom-right of `area`.

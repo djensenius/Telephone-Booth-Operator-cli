@@ -6,14 +6,18 @@
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
-use ratatui::style::{Modifier, Style};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Paragraph, Wrap};
+use std::time::Instant;
 use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
 
+use tbo_core::domain::{BoothState, BoothStatus, RuntimeMode};
+
 use crate::app::App;
 use crate::auth::AuthPhase;
+use crate::data::Remote;
 use crate::ui::theme::Theme;
 
 /// The set of top-level screens, in tab order.
@@ -169,44 +173,198 @@ pub fn render(app: &App, frame: &mut Frame, area: Rect) {
     let theme = app.theme();
     let screen = app.screen();
 
-    let mut lines = vec![
-        Line::from(Span::styled(
-            screen.title(),
-            Style::new().fg(theme.accent).add_modifier(Modifier::BOLD),
-        )),
-        Line::raw(""),
-        Line::raw(screen.description()),
-    ];
-
-    if screen == Screen::Settings {
-        let config = app.config();
-        lines.push(Line::raw(""));
-        lines.push(Line::from(vec![
-            Span::styled("Operator API: ", Style::new().fg(theme.dim)),
-            Span::raw(config.operator.base_url.clone()),
-        ]));
-        lines.push(Line::from(vec![
-            Span::styled("OIDC issuer:  ", Style::new().fg(theme.dim)),
-            Span::raw(config.auth.issuer.clone()),
-        ]));
-        lines.push(Line::from(vec![
-            Span::styled("Booths:       ", Style::new().fg(theme.dim)),
-            Span::raw(config.booths.len().to_string()),
-        ]));
-        push_account_lines(&mut lines, theme, app.auth().phase());
-    }
-
-    lines.push(Line::raw(""));
-    lines.push(Line::from(Span::styled(
-        "Coming soon.",
-        Style::new().fg(theme.dim).add_modifier(Modifier::ITALIC),
-    )));
+    let lines = match screen {
+        Screen::Status => status_lines(app, theme),
+        Screen::Settings => settings_lines(app, theme),
+        _ => placeholder_lines(screen, theme),
+    };
 
     let block = Block::bordered()
         .border_style(Style::new().fg(theme.dim))
         .title(format!(" {} ", screen.title()));
     let paragraph = Paragraph::new(lines).block(block).wrap(Wrap { trim: true });
     frame.render_widget(paragraph, area);
+}
+
+/// The title header line for a screen body.
+fn header(theme: &Theme, title: &'static str) -> Line<'static> {
+    Line::from(Span::styled(
+        title,
+        Style::new().fg(theme.accent).add_modifier(Modifier::BOLD),
+    ))
+}
+
+/// A placeholder body for screens that are not yet implemented.
+fn placeholder_lines(screen: Screen, theme: &Theme) -> Vec<Line<'static>> {
+    vec![
+        header(theme, screen.title()),
+        Line::raw(""),
+        Line::raw(screen.description()),
+        Line::raw(""),
+        Line::from(Span::styled(
+            "Coming soon.",
+            Style::new().fg(theme.dim).add_modifier(Modifier::ITALIC),
+        )),
+    ]
+}
+
+/// The Settings body: configuration summary and account/auth section.
+fn settings_lines(app: &App, theme: &Theme) -> Vec<Line<'static>> {
+    let config = app.config();
+    let mut lines = vec![
+        header(theme, Screen::Settings.title()),
+        Line::raw(""),
+        Line::raw(Screen::Settings.description()),
+        Line::raw(""),
+        Line::from(vec![
+            Span::styled("Operator API: ", Style::new().fg(theme.dim)),
+            Span::raw(config.operator.base_url.clone()),
+        ]),
+        Line::from(vec![
+            Span::styled("OIDC issuer:  ", Style::new().fg(theme.dim)),
+            Span::raw(config.auth.issuer.clone()),
+        ]),
+        Line::from(vec![
+            Span::styled("Booths:       ", Style::new().fg(theme.dim)),
+            Span::raw(config.booths.len().to_string()),
+        ]),
+    ];
+    push_account_lines(&mut lines, theme, app.auth().phase());
+    lines
+}
+
+/// The Status body: live booth state from the operator API.
+fn status_lines(app: &App, theme: &Theme) -> Vec<Line<'static>> {
+    let mut lines = vec![header(theme, Screen::Status.title()), Line::raw("")];
+    match app.status().state() {
+        Remote::Idle | Remote::Loading => lines.push(hint_line(theme, "Loading booth status…")),
+        Remote::Ready { value, fetched_at } => {
+            push_status_detail(&mut lines, theme, value);
+            lines.push(Line::raw(""));
+            lines.push(note_line(theme, format!("Fetched {}.", ago(*fetched_at))));
+        }
+        Remote::Failed { error, at } => {
+            lines.push(Line::from(Span::styled(
+                format!("Failed to load status {}.", ago(*at)),
+                Style::new().fg(theme.error),
+            )));
+            lines.push(Line::from(vec![
+                Span::styled("Reason: ", Style::new().fg(theme.dim)),
+                Span::raw(error.clone()),
+            ]));
+            lines.push(hint_line(
+                theme,
+                "Press r to retry; sign in via Settings if unauthorized.",
+            ));
+        }
+    }
+    if app.status().is_refreshing() {
+        lines.push(note_line(theme, "Refreshing…".to_owned()));
+    }
+    lines
+}
+
+/// Append the detail rows for a loaded [`BoothStatus`].
+fn push_status_detail(lines: &mut Vec<Line<'static>>, theme: &Theme, status: &BoothStatus) {
+    lines.push(Line::from(vec![
+        Span::styled("State:        ", Style::new().fg(theme.dim)),
+        Span::styled(
+            state_label(status.state),
+            Style::new()
+                .fg(state_color(theme, status.state))
+                .add_modifier(Modifier::BOLD),
+        ),
+    ]));
+    lines.push(Line::from(vec![
+        Span::styled("Runtime mode: ", Style::new().fg(theme.dim)),
+        Span::raw(
+            status
+                .runtime_mode
+                .map_or_else(|| "—".to_owned(), |mode| mode_label(mode).to_owned()),
+        ),
+    ]));
+    if let Some(question_id) = &status.current_question_id {
+        lines.push(kv_line(theme, "Question:     ", question_id.clone()));
+    }
+    if let Some(message_id) = &status.current_message_id {
+        lines.push(kv_line(theme, "Message:      ", message_id.clone()));
+    }
+    if let Some(last_error) = &status.last_error {
+        lines.push(Line::from(vec![
+            Span::styled("Last error:   ", Style::new().fg(theme.dim)),
+            Span::styled(last_error.clone(), Style::new().fg(theme.error)),
+        ]));
+    }
+    lines.push(kv_line(
+        theme,
+        "Updated:      ",
+        format_ts(status.updated_at),
+    ));
+}
+
+/// A dim-`label` / plain-`value` line for owned values.
+fn kv_line(theme: &Theme, label: &'static str, value: String) -> Line<'static> {
+    Line::from(vec![
+        Span::styled(label, Style::new().fg(theme.dim)),
+        Span::raw(value),
+    ])
+}
+
+/// Human-readable label for a booth state.
+fn state_label(state: BoothState) -> &'static str {
+    match state {
+        BoothState::Idle => "Idle",
+        BoothState::DialTone => "Dial tone",
+        BoothState::Dialing => "Dialing",
+        BoothState::PlayingQuestion => "Playing question",
+        BoothState::Beep => "Beep",
+        BoothState::Recording => "Recording",
+        BoothState::Uploading => "Uploading",
+        BoothState::PlayingMessage => "Playing message",
+        BoothState::PlayingInstructions => "Playing instructions",
+        BoothState::Error => "Error",
+    }
+}
+
+/// Accent color for a booth state (red for errors, dim when idle).
+fn state_color(theme: &Theme, state: BoothState) -> Color {
+    match state {
+        BoothState::Error => theme.error,
+        BoothState::Idle => theme.dim,
+        _ => theme.ok,
+    }
+}
+
+/// Human-readable label for a runtime mode.
+fn mode_label(mode: RuntimeMode) -> &'static str {
+    match mode {
+        RuntimeMode::Real => "Real hardware",
+        RuntimeMode::Mock => "Mock",
+        RuntimeMode::Simulator => "Simulator",
+    }
+}
+
+/// Format a timestamp for display, falling back to `unknown`.
+fn format_ts(at: OffsetDateTime) -> String {
+    at.format(&Rfc3339).unwrap_or_else(|_| "unknown".to_owned())
+}
+
+/// A relative-age phrase for a monotonic instant (e.g. `3s ago`).
+fn ago(at: Instant) -> String {
+    let secs = at.elapsed().as_secs();
+    match secs {
+        0 => "just now".to_owned(),
+        s if s < 60 => format!("{s}s ago"),
+        s => format!("{}m {}s ago", s / 60, s % 60),
+    }
+}
+
+/// A dim, italic note line for owned text.
+fn note_line(theme: &Theme, text: String) -> Line<'static> {
+    Line::from(Span::styled(
+        text,
+        Style::new().fg(theme.dim).add_modifier(Modifier::ITALIC),
+    ))
 }
 
 /// Append the account/authentication section to the Settings body.

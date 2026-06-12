@@ -6,9 +6,11 @@ use anyhow::Result;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use tbo_auth::{InMemoryTokenStore, KeyringTokenStore, SessionManager, TokenStore};
 use tbo_core::config::Config;
+use tbo_operator_client::OperatorClient;
 use tokio::time::Duration;
 
 use crate::auth::{AuthController, AuthPhase};
+use crate::data::{SessionTokenProvider, SharedSession, StatusController};
 use crate::event::{AppEvent, EventLoop};
 use crate::tui::Tui;
 use crate::ui;
@@ -26,6 +28,7 @@ pub struct App {
     screen: Screen,
     toasts: Toasts,
     auth: AuthController,
+    status: StatusController,
     should_quit: bool,
 }
 
@@ -43,11 +46,18 @@ impl App {
             toasts.warn("No booths configured; add one in Settings to use System Health.");
         }
 
-        let auth = Self::build_auth(&config, &mut toasts)?;
+        let session = Self::build_session(&config, &mut toasts)?;
+        let auth = AuthController::new(Arc::clone(&session))?;
         match auth.phase() {
             AuthPhase::SignedIn { .. } => toasts.info("Signed in to the operator API."),
             _ => toasts.warn("Not signed in. Open Settings and press L to log in."),
         }
+
+        let api: crate::data::OperatorApi = OperatorClient::new(
+            config.operator.base_url.clone(),
+            SessionTokenProvider::new(session),
+        )?;
+        let status = StatusController::new(api);
 
         Ok(Self {
             config,
@@ -55,33 +65,38 @@ impl App {
             screen: Screen::Status,
             toasts,
             auth,
+            status,
             should_quit: false,
         })
     }
 
-    /// Build the auth controller, preferring the OS keychain and falling back
-    /// to an ephemeral in-memory store if secure storage is unavailable (e.g.
-    /// no secret service on a headless host, or a locked keychain).
-    fn build_auth(config: &Config, toasts: &mut Toasts) -> Result<AuthController> {
-        match Self::keyring_auth(config) {
-            Ok(auth) => Ok(auth),
+    /// Build the shared session manager, preferring the OS keychain and falling
+    /// back to an ephemeral in-memory store if secure storage is unavailable
+    /// (e.g. no secret service on a headless host, or a locked keychain).
+    fn build_session(config: &Config, toasts: &mut Toasts) -> Result<SharedSession> {
+        match Self::keyring_session(config) {
+            Ok(session) => Ok(session),
             Err(err) => {
                 toasts.warn(format!(
                     "Secure storage unavailable ({err}); using an in-memory session this run."
                 ));
                 let store: Box<dyn TokenStore> = Box::new(InMemoryTokenStore::new());
                 let manager = SessionManager::new(&config.auth, store)?;
-                Ok(AuthController::new(Arc::new(manager))?)
+                Ok(Arc::new(manager))
             }
         }
     }
 
-    /// Build a keychain-backed auth controller, surfacing any keychain
-    /// construction or initial-load error to the caller.
-    fn keyring_auth(config: &Config) -> Result<AuthController> {
+    /// Build a keychain-backed session manager, surfacing any keychain
+    /// construction or initial-load error to the caller so the fallback can
+    /// engage.
+    fn keyring_session(config: &Config) -> Result<SharedSession> {
         let store: Box<dyn TokenStore> = Box::new(KeyringTokenStore::new()?);
         let manager = SessionManager::new(&config.auth, store)?;
-        Ok(AuthController::new(Arc::new(manager))?)
+        // Probe the store now so a keychain read failure triggers the fallback
+        // rather than surfacing later on first use.
+        manager.current_session()?;
+        Ok(Arc::new(manager))
     }
 
     /// The active configuration.
@@ -114,6 +129,12 @@ impl App {
         &self.auth
     }
 
+    /// The booth-status controller (drives the Status screen).
+    #[must_use]
+    pub fn status(&self) -> &StatusController {
+        &self.status
+    }
+
     /// Run the draw/event loop until the user quits.
     pub async fn run(mut self, terminal: &mut Tui) -> Result<()> {
         let mut events = EventLoop::new(TICK);
@@ -122,6 +143,7 @@ impl App {
             match events.next().await {
                 AppEvent::Tick => {
                     self.auth.drain(&mut self.toasts);
+                    self.status.tick(self.screen == Screen::Status);
                     self.toasts.prune();
                 }
                 AppEvent::Key(key) => self.on_key(key),
@@ -150,6 +172,7 @@ impl App {
             }
             KeyCode::Tab | KeyCode::Right => self.screen = self.screen.next(),
             KeyCode::BackTab | KeyCode::Left => self.screen = self.screen.prev(),
+            KeyCode::Char('r' | 'R') if self.screen == Screen::Status => self.status.refresh(),
             KeyCode::Char('l' | 'L') if self.screen == Screen::Settings => self.begin_login(),
             KeyCode::Char('o' | 'O') if self.screen == Screen::Settings => {
                 self.auth.sign_out(&mut self.toasts);

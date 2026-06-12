@@ -9,12 +9,14 @@
 //! - [`tui`]: terminal init/restore and the panic hook.
 //! - [`event`]: the async input/tick event source.
 //! - [`auth`]: interactive Authentik device-code login.
+//! - [`data`]: operator API data layer (token provider + screen controllers).
 //! - [`app`]: application state and the main loop.
 //! - [`ui`]: rendering (tab bar, screens, status bar, toasts, theme).
 
 mod app;
 mod auth;
 mod cli;
+mod data;
 mod event;
 mod logging;
 mod tui;
