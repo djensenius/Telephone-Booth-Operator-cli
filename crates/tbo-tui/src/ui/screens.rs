@@ -366,9 +366,9 @@ fn push_transcription_lines(
         None => lines.push(note_line(theme, "  (no text)".to_owned())),
     }
     if let Some(translated) = &transcription.translated_text {
-        lines.push(kv_line(theme, "  Translated:", format!(" {translated}")));
+        lines.push(kv_line(theme, "  Translated:", translated.clone()));
         if let Some(language) = &transcription.translated_language {
-            lines.push(kv_line(theme, "  → Language:", format!(" {language}")));
+            lines.push(kv_line(theme, "  → Language:", language.clone()));
         }
     }
     if let Some(error) = &transcription.error {
