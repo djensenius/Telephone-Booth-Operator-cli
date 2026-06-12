@@ -31,6 +31,8 @@ use tbo_booth_client::{
 };
 use tbo_core::config::BoothConfig;
 
+use crate::data::ActionOutcome;
+
 /// How often the panel re-polls the booth while focused.
 const POLL_INTERVAL: Duration = Duration::from_secs(2);
 
@@ -82,6 +84,8 @@ where
     stream_task: Option<JoinHandle<()>>,
     last_record_id: Option<u64>,
     live_error: Option<(String, Instant)>,
+    action_rx: Option<UnboundedReceiver<ActionOutcome>>,
+    action_in_flight: bool,
 }
 
 impl DebugController<ReqwestBoothTransport> {
@@ -141,6 +145,8 @@ where
             stream_task: None,
             last_record_id: None,
             live_error: None,
+            action_rx: None,
+            action_in_flight: false,
         }
     }
 
@@ -236,6 +242,12 @@ where
         self.config
             .as_ref()
             .is_some_and(|config| config.debug.allow_controls)
+    }
+
+    /// Whether a simulate action is currently in flight.
+    #[must_use]
+    pub fn is_action_in_flight(&self) -> bool {
+        self.action_in_flight
     }
 
     /// Advance the log-level filter to the next level and re-poll.
@@ -525,6 +537,96 @@ where
         self.logs.truncate(LOG_LIMIT);
     }
 
+    /// Simulate a hook-off (caller lifts the handset): `hook_off` event.
+    pub fn simulate_hook_off(&mut self) {
+        self.simulate_named_event("hook_off", "Simulated hook-off.");
+    }
+
+    /// Simulate a hook-on (caller hangs up; resets to idle): `hook_on` event.
+    pub fn simulate_hook_on(&mut self) {
+        self.simulate_named_event("hook_on", "Simulated hook-on (reset).");
+    }
+
+    /// Simulate playback completing: `playback_ended` event.
+    pub fn simulate_playback_ended(&mut self) {
+        self.simulate_named_event("playback_ended", "Simulated playback complete.");
+    }
+
+    /// Simulate dialing a single rotary digit. Mirrors the web panel: `0` sends
+    /// ten pulses, every other digit sends that many.
+    pub fn simulate_pulse_digit(&mut self, digit: u8) {
+        let count = if digit == 0 { 10 } else { digit };
+        let client = self.client.clone();
+        self.run_action(format!("Simulated dialing {digit}."), async move {
+            client
+                .simulate_pulse(count)
+                .await
+                .map(|_| ())
+                .map_err(|err| format!("Simulate dial failed: {err}"))
+        });
+    }
+
+    /// Inject a named core event (`{"event": name}`) via the simulate endpoint.
+    fn simulate_named_event(&mut self, name: &'static str, ok_message: &str) {
+        let client = self.client.clone();
+        let body = serde_json::json!({ "event": name });
+        let ok_message = ok_message.to_owned();
+        self.run_action(ok_message, async move {
+            client
+                .simulate_event(&body)
+                .await
+                .map(|_| ())
+                .map_err(|err| format!("Simulate failed: {err}"))
+        });
+    }
+
+    /// Spawn a simulate action, recording its outcome for the next
+    /// [`drain_actions`](Self::drain_actions). A no-op when another action is in
+    /// flight.
+    fn run_action<F>(&mut self, ok_message: String, future: F)
+    where
+        F: std::future::Future<Output = std::result::Result<(), String>> + Send + 'static,
+    {
+        if self.action_in_flight {
+            return;
+        }
+        self.action_in_flight = true;
+        let (tx, rx) = unbounded_channel();
+        self.action_rx = Some(rx);
+        tokio::spawn(async move {
+            let outcome = match future.await {
+                Ok(()) => ActionOutcome {
+                    message: ok_message,
+                    ok: true,
+                },
+                Err(message) => ActionOutcome { message, ok: false },
+            };
+            let _ = tx.send(outcome);
+        });
+    }
+
+    /// Drain any completed simulate-action outcome (called each tick). At most
+    /// one is pending, since a new action cannot start until the previous one
+    /// is drained.
+    pub fn drain_actions(&mut self) -> Vec<ActionOutcome> {
+        let Some(rx) = self.action_rx.as_mut() else {
+            return Vec::new();
+        };
+        match rx.try_recv() {
+            Ok(outcome) => {
+                self.action_in_flight = false;
+                self.action_rx = None;
+                vec![outcome]
+            }
+            Err(TryRecvError::Empty) => Vec::new(),
+            Err(TryRecvError::Disconnected) => {
+                self.action_in_flight = false;
+                self.action_rx = None;
+                Vec::new()
+            }
+        }
+    }
+
     /// Await and apply the next pending result (test helper).
     #[cfg(test)]
     async fn recv_once(&mut self) {
@@ -533,6 +635,16 @@ where
         {
             self.apply(fetch);
         }
+    }
+
+    /// Await the next completed simulate-action outcome (test helper).
+    #[cfg(test)]
+    async fn recv_action_once(&mut self) -> Option<ActionOutcome> {
+        let rx = self.action_rx.as_mut()?;
+        let outcome = rx.recv().await;
+        self.action_in_flight = false;
+        self.action_rx = None;
+        outcome
     }
 }
 
@@ -594,13 +706,20 @@ mod tests {
     #[derive(Clone, Default)]
     struct RoutingTransport {
         fail: Arc<Mutex<Vec<String>>>,
+        posts: Arc<Mutex<Vec<(String, String)>>>,
     }
 
     impl RoutingTransport {
         fn fail_path(path: &str) -> Self {
             Self {
                 fail: Arc::new(Mutex::new(vec![path.to_owned()])),
+                posts: Arc::new(Mutex::new(Vec::new())),
             }
+        }
+
+        /// The (path, body) of the most recent recorded POST, if any.
+        fn last_post(&self) -> Option<(String, String)> {
+            self.posts.lock().unwrap().last().cloned()
         }
 
         fn body_for(path: &str) -> &'static str {
@@ -647,11 +766,15 @@ mod tests {
 
         async fn post(
             &self,
-            _path: &str,
+            path: &str,
             _query: &[(&str, String)],
             _bearer: Option<&str>,
-            _json_body: Option<&str>,
+            json_body: Option<&str>,
         ) -> Result<HttpResponse> {
+            self.posts
+                .lock()
+                .unwrap()
+                .push((path.to_owned(), json_body.unwrap_or_default().to_owned()));
             Ok(HttpResponse {
                 status: 200,
                 body: r#"{"accepted":true,"injected":1}"#.to_owned(),
@@ -904,5 +1027,60 @@ mod tests {
         assert!(!controller.is_live());
         assert!(controller.live_error().is_some());
         assert!(controller.live_error().unwrap().0.contains("boom"));
+    }
+
+    #[tokio::test]
+    async fn simulate_hook_off_posts_named_event() {
+        let transport = RoutingTransport::default();
+        let mut controller = controller(transport.clone());
+
+        controller.simulate_hook_off();
+        let outcome = controller.recv_action_once().await.unwrap();
+
+        assert!(outcome.ok);
+        let (path, body) = transport.last_post().unwrap();
+        assert_eq!(path, "/v1/simulate/event");
+        assert!(body.contains("hook_off"), "body was {body}");
+    }
+
+    #[tokio::test]
+    async fn simulate_pulse_digit_maps_zero_to_ten() {
+        let transport = RoutingTransport::default();
+        let mut controller = controller(transport.clone());
+
+        controller.simulate_pulse_digit(0);
+        let outcome = controller.recv_action_once().await.unwrap();
+
+        assert!(outcome.ok);
+        let (path, body) = transport.last_post().unwrap();
+        assert_eq!(path, "/v1/simulate/pulse");
+        assert!(body.contains("\"count\":10"), "body was {body}");
+    }
+
+    #[tokio::test]
+    async fn simulate_pulse_digit_uses_the_digit_for_nonzero() {
+        let transport = RoutingTransport::default();
+        let mut controller = controller(transport.clone());
+
+        controller.simulate_pulse_digit(7);
+        controller.recv_action_once().await.unwrap();
+
+        let (_, body) = transport.last_post().unwrap();
+        assert!(body.contains("\"count\":7"), "body was {body}");
+    }
+
+    #[tokio::test]
+    async fn simulate_action_blocks_while_one_is_in_flight() {
+        let mut controller = controller(RoutingTransport::default());
+
+        controller.simulate_hook_off();
+        assert!(controller.is_action_in_flight());
+        // A second request while one is pending is dropped silently.
+        controller.simulate_hook_on();
+
+        let outcome = controller.recv_action_once().await.unwrap();
+        assert!(outcome.ok);
+        assert!(!controller.is_action_in_flight());
+        assert!(controller.drain_actions().is_empty());
     }
 }

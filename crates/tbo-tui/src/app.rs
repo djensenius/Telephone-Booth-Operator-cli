@@ -285,6 +285,7 @@ impl App {
                     if let Some(debug) = self.debug.as_mut() {
                         debug.tick(self.screen == Screen::Debug);
                     }
+                    self.drain_debug_actions();
                     self.tokens.tick(self.screen == Screen::Tokens);
                     self.drain_token_actions();
                     self.toasts.prune();
@@ -385,6 +386,18 @@ impl App {
                     }
                 }
             }
+            KeyCode::Char('o' | 'O') if self.screen == Screen::Debug => {
+                self.debug_simulate(DebugController::simulate_hook_off);
+            }
+            KeyCode::Char('h' | 'H') if self.screen == Screen::Debug => {
+                self.debug_simulate(DebugController::simulate_hook_on);
+            }
+            KeyCode::Char('p' | 'P') if self.screen == Screen::Debug => {
+                self.debug_simulate(DebugController::simulate_playback_ended);
+            }
+            KeyCode::Char('d' | 'D') if self.screen == Screen::Debug => {
+                self.open_dial_prompt();
+            }
             KeyCode::Char('l' | 'L') if self.screen == Screen::Settings => self.begin_login(),
             KeyCode::Char('o' | 'O') if self.screen == Screen::Settings => {
                 self.auth.sign_out(&mut self.toasts);
@@ -438,6 +451,10 @@ impl App {
                 self.start_token_create(name);
             }
             Intent::RevokeApiToken => self.tokens.revoke_selected(),
+            Intent::SimulateDial => {
+                let input = modal.input().to_owned();
+                self.simulate_dial(&input);
+            }
         }
     }
 
@@ -605,6 +622,81 @@ impl App {
             if outcome.ok {
                 self.toasts.info(outcome.message);
                 self.tokens.refresh();
+            } else {
+                self.toasts.error(outcome.message);
+            }
+        }
+    }
+
+    /// Run a booth simulate action, gating on booth availability, the booth's
+    /// `allowControls` setting, and any in-flight request.
+    fn debug_simulate(&mut self, action: impl FnOnce(&mut DebugController)) {
+        if self.debug.is_none() {
+            self.toasts.info("No booth is configured.");
+            return;
+        }
+        if !self
+            .debug
+            .as_ref()
+            .is_some_and(DebugController::controls_allowed)
+        {
+            self.toasts
+                .info("Simulate controls are disabled on this booth.");
+            return;
+        }
+        if self
+            .debug
+            .as_ref()
+            .is_some_and(DebugController::is_action_in_flight)
+        {
+            self.toasts
+                .warn("A simulate action is already in progress.");
+            return;
+        }
+        if let Some(debug) = self.debug.as_mut() {
+            action(debug);
+        }
+    }
+
+    /// Open a prompt for the rotary digit to simulate dialing.
+    fn open_dial_prompt(&mut self) {
+        if !self
+            .debug
+            .as_ref()
+            .is_some_and(DebugController::controls_allowed)
+        {
+            self.toasts
+                .info("Simulate controls are disabled on this booth.");
+            return;
+        }
+        self.modal = Some(Modal::prompt(
+            "Simulate dial",
+            "Rotary digit (0-9)",
+            Intent::SimulateDial,
+        ));
+    }
+
+    /// Parse a single rotary digit and simulate dialing it.
+    fn simulate_dial(&mut self, input: &str) {
+        let digit = match input.trim().parse::<u8>() {
+            Ok(digit) if digit <= 9 => digit,
+            _ => {
+                self.toasts.warn("Enter a single digit 0-9.");
+                return;
+            }
+        };
+        self.debug_simulate(move |debug| debug.simulate_pulse_digit(digit));
+    }
+
+    /// Surface completed booth simulate outcomes as toasts.
+    fn drain_debug_actions(&mut self) {
+        let Some(debug) = self.debug.as_mut() else {
+            return;
+        };
+        let outcomes = debug.drain_actions();
+        for outcome in outcomes {
+            if outcome.ok {
+                self.toasts.info(outcome.message);
             } else {
                 self.toasts.error(outcome.message);
             }
