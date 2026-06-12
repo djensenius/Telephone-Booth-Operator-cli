@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.1](https://github.com/djensenius/Telephone-Booth-Operator-cli/compare/v0.2.0...v0.2.1) (2026-06-12)
+
+
+### Bug Fixes
+
+* add Authentik setup guide for the CLI ([#64](https://github.com/djensenius/Telephone-Booth-Operator-cli/issues/64)) ([e847791](https://github.com/djensenius/Telephone-Booth-Operator-cli/commit/e8477910d399c2ff76925215720c25f025e9ddab))
+
 ## [0.2.0](https://github.com/djensenius/Telephone-Booth-Operator-cli/compare/v0.1.0...v0.2.0) (2026-06-12)
 
 
