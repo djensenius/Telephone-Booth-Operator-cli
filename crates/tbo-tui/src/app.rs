@@ -11,7 +11,8 @@ use tokio::time::Duration;
 
 use crate::auth::{AuthController, AuthPhase};
 use crate::data::{
-    MessagesController, QuestionsController, SessionTokenProvider, SharedSession, StatusController,
+    MessagesController, QuestionsController, SessionTokenProvider, SessionsController,
+    SharedSession, StatusController,
 };
 use crate::event::{AppEvent, EventLoop};
 use crate::tui::Tui;
@@ -33,6 +34,7 @@ pub struct App {
     status: StatusController,
     messages: MessagesController,
     questions: QuestionsController,
+    sessions: SessionsController,
     should_quit: bool,
 }
 
@@ -63,7 +65,8 @@ impl App {
         )?;
         let status = StatusController::new(api.clone());
         let messages = MessagesController::new(api.clone());
-        let questions = QuestionsController::new(api);
+        let questions = QuestionsController::new(api.clone());
+        let sessions = SessionsController::new(api);
 
         Ok(Self {
             config,
@@ -74,6 +77,7 @@ impl App {
             status,
             messages,
             questions,
+            sessions,
             should_quit: false,
         })
     }
@@ -155,6 +159,12 @@ impl App {
         &self.questions
     }
 
+    /// The sessions controller (drives the Sessions screen).
+    #[must_use]
+    pub fn sessions(&self) -> &SessionsController {
+        &self.sessions
+    }
+
     /// Run the draw/event loop until the user quits.
     pub async fn run(mut self, terminal: &mut Tui) -> Result<()> {
         let mut events = EventLoop::new(TICK);
@@ -166,6 +176,7 @@ impl App {
                     self.status.tick(self.screen == Screen::Status);
                     self.messages.tick(self.screen == Screen::Messages);
                     self.questions.tick(self.screen == Screen::Questions);
+                    self.sessions.tick(self.screen == Screen::Sessions);
                     self.toasts.prune();
                 }
                 AppEvent::Key(key) => self.on_key(key),
@@ -212,6 +223,7 @@ impl App {
             Screen::Status => self.status.refresh(),
             Screen::Messages => self.messages.refresh(),
             Screen::Questions => self.questions.refresh(),
+            Screen::Sessions => self.sessions.refresh(),
             _ => {}
         }
     }
@@ -221,6 +233,7 @@ impl App {
         match self.screen {
             Screen::Messages => self.messages.select_next(),
             Screen::Questions => self.questions.select_next(),
+            Screen::Sessions => self.sessions.select_next(),
             _ => {}
         }
     }
@@ -230,6 +243,7 @@ impl App {
         match self.screen {
             Screen::Messages => self.messages.select_prev(),
             Screen::Questions => self.questions.select_prev(),
+            Screen::Sessions => self.sessions.select_prev(),
             _ => {}
         }
     }

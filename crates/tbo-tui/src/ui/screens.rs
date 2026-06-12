@@ -14,8 +14,9 @@ use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
 
 use tbo_core::domain::{
-    BoothState, BoothStatus, Message, MessageStatus, Moderation, ModerationRecommendation,
-    Question, QuestionStatus, RuntimeMode, Transcription, TranscriptionStatus,
+    BoothEventRecord, BoothEventType, BoothState, BoothStatus, CallOutcome, CallSession,
+    CallSessionDetail, Message, MessageStatus, Moderation, ModerationRecommendation, Question,
+    QuestionStatus, RuntimeMode, Transcription, TranscriptionStatus,
 };
 
 use crate::app::App;
@@ -177,6 +178,7 @@ pub fn render(app: &App, frame: &mut Frame, area: Rect) {
     match app.screen() {
         Screen::Messages => render_messages(app, frame, area),
         Screen::Questions => render_questions(app, frame, area),
+        Screen::Sessions => render_sessions(app, frame, area),
         Screen::Status => render_paragraph(frame, area, theme, "Status", status_lines(app, theme)),
         Screen::Settings => {
             render_paragraph(frame, area, theme, "Settings", settings_lines(app, theme));
@@ -645,6 +647,240 @@ fn format_duration(duration_ms: i64) -> String {
         format!("{minutes}m {seconds}s")
     } else {
         format!("{seconds}.{millis:03}s")
+    }
+}
+
+/// Render the Sessions screen: a master list beside a detail/timeline pane.
+fn render_sessions(app: &App, frame: &mut Frame, area: Rect) {
+    let theme = app.theme();
+    let controller = app.sessions();
+    match controller.state() {
+        Remote::Ready { value, fetched_at } if !value.is_empty() => {
+            let columns =
+                Layout::horizontal([Constraint::Percentage(42), Constraint::Min(28)]).split(area);
+            render_session_list(frame, columns[0], theme, value, controller.selected_index());
+
+            let mut detail =
+                session_detail_lines(theme, controller.selected_session(), controller.detail());
+            detail.push(Line::raw(""));
+            if controller.is_refreshing() {
+                detail.push(note_line(theme, "Refreshing…".to_owned()));
+            } else {
+                detail.push(note_line(theme, format!("Fetched {}.", ago(*fetched_at))));
+            }
+            render_paragraph(frame, columns[1], theme, "Detail", detail);
+        }
+        other => render_paragraph(
+            frame,
+            area,
+            theme,
+            "Sessions",
+            sessions_status_lines(theme, other),
+        ),
+    }
+}
+
+/// Body lines for the non-list Sessions states (loading, empty, or failed).
+fn sessions_status_lines(theme: &Theme, state: &Remote<Vec<CallSession>>) -> Vec<Line<'static>> {
+    let mut lines = vec![header(theme, Screen::Sessions.title()), Line::raw("")];
+    match state {
+        Remote::Idle | Remote::Loading => lines.push(hint_line(theme, "Loading sessions…")),
+        Remote::Ready { .. } => {
+            lines.push(note_line(theme, "No sessions.".to_owned()));
+            lines.push(hint_line(theme, "Press r to reload."));
+        }
+        Remote::Failed { error, at } => {
+            lines.push(Line::from(Span::styled(
+                format!("Failed to load sessions {}.", ago(*at)),
+                Style::new().fg(theme.error),
+            )));
+            lines.push(Line::from(vec![
+                Span::styled("Reason: ", Style::new().fg(theme.dim)),
+                Span::raw(error.clone()),
+            ]));
+            lines.push(hint_line(
+                theme,
+                "Press r to retry; sign in via Settings if unauthorized.",
+            ));
+        }
+    }
+    lines
+}
+
+/// Render the scrollable list of sessions with the selected row highlighted.
+fn render_session_list(
+    frame: &mut Frame,
+    area: Rect,
+    theme: &Theme,
+    sessions: &[CallSession],
+    selected: usize,
+) {
+    let items: Vec<ListItem> = sessions
+        .iter()
+        .map(|session| {
+            ListItem::new(Line::from(vec![
+                outcome_badge(theme, session.outcome),
+                Span::raw(" "),
+                Span::styled(short_time(session.started_at), Style::new().fg(theme.dim)),
+            ]))
+        })
+        .collect();
+    let list = List::new(items)
+        .block(
+            Block::bordered()
+                .border_style(Style::new().fg(theme.dim))
+                .title(" Sessions "),
+        )
+        .highlight_style(
+            Style::new()
+                .fg(theme.accent)
+                .add_modifier(Modifier::REVERSED | Modifier::BOLD),
+        )
+        .highlight_symbol("> ");
+    let mut list_state = ListState::default();
+    list_state.select(Some(selected));
+    frame.render_stateful_widget(list, area, &mut list_state);
+}
+
+/// Build the detail-pane lines for the selected session and its timeline.
+fn session_detail_lines(
+    theme: &Theme,
+    session: Option<&CallSession>,
+    detail: &Remote<CallSessionDetail>,
+) -> Vec<Line<'static>> {
+    let Some(session) = session else {
+        return vec![
+            header(theme, "Session"),
+            Line::raw(""),
+            hint_line(theme, "Select a session."),
+        ];
+    };
+
+    let mut lines = vec![
+        header(theme, "Session"),
+        Line::raw(""),
+        kv_line(theme, "ID:        ", session.id.clone()),
+        kv_line(theme, "Booth:     ", session.booth_id.clone()),
+        Line::from(vec![
+            Span::styled("Outcome:   ", Style::new().fg(theme.dim)),
+            outcome_badge(theme, session.outcome),
+        ]),
+        kv_line(theme, "Started:   ", format_ts(session.started_at)),
+    ];
+    if let Some(ended_at) = session.ended_at {
+        lines.push(kv_line(theme, "Ended:     ", format_ts(ended_at)));
+    }
+    if let Some(duration_ms) = session.duration_ms {
+        lines.push(kv_line(theme, "Duration:  ", format_duration(duration_ms)));
+    }
+    if let Some(digits) = &session.digits_dialed {
+        lines.push(kv_line(theme, "Digits:    ", digits.clone()));
+    }
+    if let Some(recording_id) = &session.recording_id {
+        lines.push(kv_line(theme, "Recording: ", recording_id.clone()));
+    }
+    if let Some(version) = &session.version {
+        lines.push(kv_line(theme, "Version:   ", version.clone()));
+    }
+
+    lines.push(Line::raw(""));
+    lines.push(subheader(theme, "Timeline"));
+    push_timeline_lines(&mut lines, theme, detail);
+
+    lines
+}
+
+/// Append the session timeline rows for the current detail load state.
+fn push_timeline_lines(
+    lines: &mut Vec<Line<'static>>,
+    theme: &Theme,
+    detail: &Remote<CallSessionDetail>,
+) {
+    match detail {
+        Remote::Idle | Remote::Loading => {
+            lines.push(note_line(theme, "  Loading timeline…".to_owned()));
+        }
+        Remote::Ready { value, .. } => {
+            if value.events.is_empty() {
+                lines.push(note_line(theme, "  (no events)".to_owned()));
+            } else {
+                for event in &value.events {
+                    lines.push(timeline_line(theme, event));
+                }
+            }
+        }
+        Remote::Failed { error, at } => {
+            lines.push(Line::from(Span::styled(
+                format!("  Failed to load timeline {}.", ago(*at)),
+                Style::new().fg(theme.error),
+            )));
+            lines.push(Line::from(vec![
+                Span::styled("  Reason: ", Style::new().fg(theme.dim)),
+                Span::raw(error.clone()),
+            ]));
+        }
+    }
+}
+
+/// A single timeline row: clock time and the event type.
+fn timeline_line(theme: &Theme, event: &BoothEventRecord) -> Line<'static> {
+    Line::from(vec![
+        Span::styled(
+            format!("  {} ", clock_time(event.occurred_at)),
+            Style::new().fg(theme.dim),
+        ),
+        Span::raw(event_type_label(event.event_type)),
+    ])
+}
+
+/// Colored badge for a call outcome (or a neutral marker when in progress).
+fn outcome_badge(theme: &Theme, outcome: Option<CallOutcome>) -> Span<'static> {
+    let Some(outcome) = outcome else {
+        return badge("active", theme.accent);
+    };
+    let (label, color) = match outcome {
+        CallOutcome::RecordingCompleted => ("completed", theme.ok),
+        CallOutcome::HungUpBeforeDial => ("hung-up:pre-dial", theme.warn),
+        CallOutcome::HungUpDuringPrompt => ("hung-up:prompt", theme.warn),
+        CallOutcome::HungUpDuringRecording => ("hung-up:recording", theme.warn),
+        CallOutcome::HungUpDuringUpload => ("hung-up:upload", theme.warn),
+        CallOutcome::RecordingFailed => ("recording-failed", theme.error),
+        CallOutcome::UploadFailed => ("upload-failed", theme.error),
+        CallOutcome::OperatorError => ("operator-error", theme.error),
+        CallOutcome::Aborted => ("aborted", theme.error),
+    };
+    badge(label, color)
+}
+
+/// Human-readable label for a booth event type.
+fn event_type_label(event_type: BoothEventType) -> &'static str {
+    match event_type {
+        BoothEventType::CallStarted => "call started",
+        BoothEventType::CallEnded => "call ended",
+        BoothEventType::DigitDialed => "digit dialed",
+        BoothEventType::StateTransition => "state transition",
+        BoothEventType::RecordingStarted => "recording started",
+        BoothEventType::RecordingStopped => "recording stopped",
+        BoothEventType::UploadStarted => "upload started",
+        BoothEventType::UploadCompleted => "upload completed",
+        BoothEventType::UploadFailed => "upload failed",
+        BoothEventType::GpioEdge => "GPIO edge",
+        BoothEventType::AudioDeviceChange => "audio device change",
+        BoothEventType::OperatorRequest => "operator request",
+        BoothEventType::OperatorResponse => "operator response",
+        BoothEventType::Error => "error",
+        BoothEventType::Log => "log",
+        BoothEventType::SystemSample => "system sample",
+    }
+}
+
+/// A `HH:MM:SS` clock time for timeline rows.
+fn clock_time(at: OffsetDateTime) -> String {
+    let formatted = format_ts(at);
+    if formatted.is_char_boundary(11) && formatted.is_char_boundary(19) && formatted.len() >= 19 {
+        formatted[11..19].to_owned()
+    } else {
+        formatted
     }
 }
 
