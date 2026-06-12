@@ -68,12 +68,12 @@ fn render_status_bar(app: &App, frame: &mut Frame, area: Rect) {
 
 /// Context-sensitive help text for the status bar.
 fn status_hints(app: &App) -> &'static str {
-    use crate::ui::screens::Screen;
-
+    // A login can be cancelled from any screen, so surface the hint whenever
+    // one is in progress regardless of the focused screen.
+    if app.auth().is_in_progress() {
+        return "  Esc cancel login | Tab/Right next | 1-9 jump | q quit";
+    }
     if app.screen() == Screen::Settings {
-        if app.auth().is_in_progress() {
-            return "  Esc cancel login | Tab/Right next | 1-9 jump | q quit";
-        }
         return "  L log in | O sign out | Tab/Right next | 1-9 jump | q quit";
     }
     "  Tab/Right next | Shift-Tab/Left prev | 1-9 jump | q quit"
