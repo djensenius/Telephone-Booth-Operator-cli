@@ -24,6 +24,10 @@ pub enum Intent {
         /// The prompt text gathered by the preceding [`Intent::NewQuestionPrompt`] step.
         prompt: String,
     },
+    /// Collect the name for a new API token and create it.
+    NewApiToken,
+    /// Revoke the selected API token.
+    RevokeApiToken,
 }
 
 /// What the app should do after routing a key to the active modal.

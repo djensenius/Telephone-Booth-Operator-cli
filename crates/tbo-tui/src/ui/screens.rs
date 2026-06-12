@@ -15,10 +15,10 @@ use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
 
 use tbo_core::domain::{
-    BoothEventRecord, BoothEventType, BoothState, BoothStatus, BoothSystemSnapshot,
-    BoothSystemSnapshotEnvelope, CallOutcome, CallSession, CallSessionDetail, Message,
-    MessageStatus, Moderation, ModerationRecommendation, Question, QuestionStatus, RuntimeMode,
-    StatsOverview, StatsWindow, Transcription, TranscriptionStatus,
+    ApiToken, ApiTokenCreated, ApiTokenUsageBucket, BoothEventRecord, BoothEventType, BoothState,
+    BoothStatus, BoothSystemSnapshot, BoothSystemSnapshotEnvelope, CallOutcome, CallSession,
+    CallSessionDetail, Message, MessageStatus, Moderation, ModerationRecommendation, Question,
+    QuestionStatus, RuntimeMode, StatsOverview, StatsWindow, Transcription, TranscriptionStatus,
 };
 
 use crate::app::App;
@@ -185,6 +185,7 @@ pub fn render(app: &App, frame: &mut Frame, area: Rect) {
         Screen::Questions => render_questions(app, frame, area),
         Screen::Sessions => render_sessions(app, frame, area),
         Screen::Events => render_events(app, frame, area),
+        Screen::Tokens => render_tokens(app, frame, area),
         Screen::Stats => {
             render_paragraph(frame, area, theme, "Statistics", stats_lines(app, theme));
         }
@@ -666,6 +667,206 @@ fn format_duration(duration_ms: i64) -> String {
     } else {
         format!("{seconds}.{millis:03}s")
     }
+}
+
+/// Render the Tokens screen: a master list beside a detail pane that reveals a
+/// freshly created secret and, on demand, per-token usage.
+fn render_tokens(app: &App, frame: &mut Frame, area: Rect) {
+    let theme = app.theme();
+    let controller = app.tokens();
+    match controller.state() {
+        Remote::Ready { value, fetched_at } if !value.is_empty() => {
+            let columns =
+                Layout::horizontal([Constraint::Percentage(42), Constraint::Min(28)]).split(area);
+            render_token_list(frame, columns[0], theme, value, controller.selected_index());
+
+            let mut detail = Vec::new();
+            if let Some(created) = controller.revealed() {
+                detail.extend(token_reveal_lines(theme, created));
+                detail.push(Line::raw(""));
+            }
+            detail.extend(token_detail_lines(theme, controller.selected_token()));
+            if let Some(usage) = controller.usage() {
+                detail.push(Line::raw(""));
+                detail.extend(token_usage_lines(theme, usage));
+            }
+            detail.push(Line::raw(""));
+            if controller.is_refreshing() {
+                detail.push(note_line(theme, "Refreshing…".to_owned()));
+            } else {
+                detail.push(note_line(theme, format!("Fetched {}.", ago(*fetched_at))));
+            }
+            render_paragraph(frame, columns[1], theme, "Detail", detail);
+        }
+        other => {
+            let mut lines = tokens_status_lines(theme, other);
+            if let Some(created) = controller.revealed() {
+                lines.push(Line::raw(""));
+                lines.extend(token_reveal_lines(theme, created));
+            }
+            render_paragraph(frame, area, theme, "API Tokens", lines);
+        }
+    }
+}
+
+/// Body lines for the non-list Tokens states (loading, empty, or failed).
+fn tokens_status_lines(theme: &Theme, state: &Remote<Vec<ApiToken>>) -> Vec<Line<'static>> {
+    let mut lines = vec![header(theme, Screen::Tokens.title()), Line::raw("")];
+    match state {
+        Remote::Idle | Remote::Loading => lines.push(hint_line(theme, "Loading tokens…")),
+        Remote::Ready { .. } => {
+            lines.push(note_line(theme, "No API tokens.".to_owned()));
+            lines.push(hint_line(theme, "Press n to create one; r to reload."));
+        }
+        Remote::Failed { error, at } => {
+            lines.push(Line::from(Span::styled(
+                format!("Failed to load tokens {}.", ago(*at)),
+                Style::new().fg(theme.error),
+            )));
+            lines.push(Line::from(vec![
+                Span::styled("Reason: ", Style::new().fg(theme.dim)),
+                Span::raw(error.clone()),
+            ]));
+            lines.push(hint_line(
+                theme,
+                "Press r to retry; sign in via Settings if unauthorized.",
+            ));
+        }
+    }
+    lines
+}
+
+/// Render the scrollable list of tokens with the selected row highlighted.
+fn render_token_list(
+    frame: &mut Frame,
+    area: Rect,
+    theme: &Theme,
+    tokens: &[ApiToken],
+    selected: usize,
+) {
+    let now = OffsetDateTime::now_utc();
+    let items: Vec<ListItem> = tokens
+        .iter()
+        .map(|token| {
+            ListItem::new(Line::from(vec![
+                token_status_badge(theme, token, now),
+                Span::raw(" "),
+                Span::raw(truncate(&token.name, 26)),
+                Span::styled(format!("  ··{}", token.last4), Style::new().fg(theme.dim)),
+            ]))
+        })
+        .collect();
+    let list = List::new(items)
+        .block(
+            Block::bordered()
+                .border_style(Style::new().fg(theme.dim))
+                .title(" Tokens "),
+        )
+        .highlight_style(
+            Style::new()
+                .fg(theme.accent)
+                .add_modifier(Modifier::REVERSED | Modifier::BOLD),
+        )
+        .highlight_symbol("> ");
+    let mut list_state = ListState::default();
+    list_state.select(Some(selected));
+    frame.render_stateful_widget(list, area, &mut list_state);
+}
+
+/// Build the detail-pane lines for the selected token.
+fn token_detail_lines(theme: &Theme, token: Option<&ApiToken>) -> Vec<Line<'static>> {
+    let Some(token) = token else {
+        return vec![
+            header(theme, "Token"),
+            Line::raw(""),
+            hint_line(theme, "Select a token."),
+        ];
+    };
+    let now = OffsetDateTime::now_utc();
+    vec![
+        header(theme, "Token"),
+        Line::raw(""),
+        kv_line(theme, "ID:        ", token.id.clone()),
+        kv_line(theme, "Name:      ", token.name.clone()),
+        kv_line(theme, "Secret:    ", format!("··{}", token.last4)),
+        Line::from(vec![
+            Span::styled("Status:    ", Style::new().fg(theme.dim)),
+            token_status_badge(theme, token, now),
+        ]),
+        kv_line(theme, "Created:   ", format_ts(token.created_at)),
+        kv_line(theme, "Expires:   ", format_expiry(token.expires_at)),
+        kv_line(
+            theme,
+            "Last used: ",
+            token
+                .last_used_at
+                .map_or_else(|| "never".to_owned(), format_ts),
+        ),
+        kv_line(
+            theme,
+            "Revoked:   ",
+            token.revoked_at.map_or_else(|| "no".to_owned(), format_ts),
+        ),
+    ]
+}
+
+/// A colored badge describing a token's effective status.
+fn token_status_badge(theme: &Theme, token: &ApiToken, now: OffsetDateTime) -> Span<'static> {
+    let (label, color) = if token.revoked_at.is_some() {
+        ("revoked", theme.error)
+    } else if token.expires_at.is_some_and(|expires| expires <= now) {
+        ("expired", theme.warn)
+    } else {
+        ("active", theme.ok)
+    };
+    badge(label, color)
+}
+
+/// Build the one-time secret reveal block for a freshly created token.
+fn token_reveal_lines(theme: &Theme, created: &ApiTokenCreated) -> Vec<Line<'static>> {
+    vec![
+        Line::from(Span::styled(
+            format!("New token \"{}\" created", created.name),
+            Style::new().fg(theme.ok).add_modifier(Modifier::BOLD),
+        )),
+        Line::from(Span::styled(
+            created.plaintext.clone(),
+            Style::new().fg(theme.accent).add_modifier(Modifier::BOLD),
+        )),
+        Line::from(Span::styled(
+            "Copy this secret now — it is shown only once. Press Esc to dismiss.",
+            Style::new().fg(theme.warn),
+        )),
+    ]
+}
+
+/// Build the usage block for the selected token.
+fn token_usage_lines(
+    theme: &Theme,
+    usage: &Remote<Vec<ApiTokenUsageBucket>>,
+) -> Vec<Line<'static>> {
+    let mut lines = vec![subheader(theme, "Usage (30d)")];
+    match usage {
+        Remote::Idle | Remote::Loading => lines.push(hint_line(theme, "Loading usage…")),
+        Remote::Ready { value, .. } if value.is_empty() => {
+            lines.push(note_line(theme, "No usage in the last 30 days.".to_owned()));
+        }
+        Remote::Ready { value, .. } => {
+            for bucket in value {
+                lines.push(Line::from(vec![
+                    Span::styled(format!("{}  ", bucket.date), Style::new().fg(theme.dim)),
+                    Span::raw(bucket.count.to_string()),
+                ]));
+            }
+        }
+        Remote::Failed { error, .. } => {
+            lines.push(Line::from(vec![
+                Span::styled("Usage failed: ", Style::new().fg(theme.error)),
+                Span::raw(error.clone()),
+            ]));
+        }
+    }
+    lines
 }
 
 /// Render the Sessions screen: a master list beside a detail/timeline pane.
