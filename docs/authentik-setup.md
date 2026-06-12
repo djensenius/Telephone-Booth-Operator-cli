@@ -93,7 +93,7 @@ Confirm the provider (Applications → Providers) has:
 | Field                       | Value                                            |
 | --------------------------- | ------------------------------------------------ |
 | Client type                 | **Public**                                       |
-| Scopes                      | `openid profile email offline_access`            |
+| Scopes                      | `openid email profile offline_access`            |
 | `groups` claim              | emitted (Authentik's default `profile` mapping)  |
 | Refresh token validity      | long enough for your session (e.g. 30 days)      |
 
@@ -138,7 +138,7 @@ the mobile app. The brand device-code flow above is still required.
 | Signing Key                 | _default (RSA)_                                      |
 | Subject mode                | Based on the User's hashed ID                        |
 | Include claims in id_token  | Yes                                                  |
-| Scopes                      | `openid` `profile` `email` `offline_access`          |
+| Scopes                      | `openid` `email` `profile` `offline_access`          |
 | Refresh token validity      | e.g. `days=30`                                       |
 
 Make sure the provider emits a `groups` claim (the default `profile` scope
