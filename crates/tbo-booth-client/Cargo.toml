@@ -18,6 +18,10 @@ tbo-core = { workspace = true }
 tbo-metrics = { workspace = true }
 reqwest = { workspace = true }
 rustls = { workspace = true }
+tokio = { workspace = true }
+tokio-tungstenite = { workspace = true }
+tokio-rustls = { workspace = true }
+futures = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }
