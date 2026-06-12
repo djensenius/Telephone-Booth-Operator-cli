@@ -40,6 +40,10 @@ pub enum AuthError {
     #[error("failed to decode response: {0}")]
     Decode(String),
 
+    /// The token store (OS keychain) could not be read or written.
+    #[error("token storage error: {0}")]
+    Storage(String),
+
     /// The flow was cancelled by the caller.
     #[error("authentication was cancelled")]
     Cancelled,
