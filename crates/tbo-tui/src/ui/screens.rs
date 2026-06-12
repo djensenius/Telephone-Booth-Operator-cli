@@ -20,6 +20,7 @@ use time::format_description::well_known::Rfc3339;
 
 use tbo_audio::PlaybackStatus;
 use tbo_booth_client::{GpioPinSnapshot, LogEntry};
+use tbo_core::config::BoothConfig;
 use tbo_core::domain::{
     ApiToken, ApiTokenCreated, ApiTokenUsageBucket, BoothEventRecord, BoothEventType, BoothState,
     BoothStatus, BoothSystemSnapshot, BoothSystemSnapshotEnvelope, CallOutcome, CallSession,
@@ -56,12 +57,14 @@ pub enum Screen {
     Debug,
     /// API tokens.
     Tokens,
-    /// Settings, identity, and about.
+    /// Settings, identity, and configuration.
     Settings,
+    /// Application and connection information.
+    About,
 }
 
 /// All screens in display/tab order.
-const ALL: [Screen; 11] = [
+const ALL: [Screen; 12] = [
     Screen::Status,
     Screen::Messages,
     Screen::Questions,
@@ -73,6 +76,7 @@ const ALL: [Screen; 11] = [
     Screen::Debug,
     Screen::Tokens,
     Screen::Settings,
+    Screen::About,
 ];
 
 /// Maximum number of pretty-printed JSON payload lines shown in event detail.
@@ -126,6 +130,7 @@ impl Screen {
             Screen::Debug => "Debug",
             Screen::Tokens => "API Tokens",
             Screen::Settings => "Settings",
+            Screen::About => "About",
         }
     }
 
@@ -144,6 +149,7 @@ impl Screen {
             Screen::Debug => "Debug",
             Screen::Tokens => "Tokens",
             Screen::Settings => "Settings",
+            Screen::About => "About",
         }
     }
 
@@ -180,6 +186,7 @@ impl Screen {
             Screen::Settings => {
                 "Operator URL, OIDC issuer, configured booths, theme, and identity."
             }
+            Screen::About => "Application version, repository, backends, and a keyboard reference.",
         }
     }
 }
@@ -209,6 +216,9 @@ pub fn render(app: &App, frame: &mut Frame, area: Rect) {
         Screen::SystemHealth => render_system_health(app, frame, area),
         Screen::Settings => {
             render_paragraph(frame, area, theme, "Settings", settings_lines(app, theme));
+        }
+        Screen::About => {
+            render_paragraph(frame, area, theme, "About", about_lines(app, theme));
         }
         Screen::Debug => render_debug(app, frame, area),
     }
@@ -2713,7 +2723,8 @@ fn header(theme: &Theme, title: &'static str) -> Line<'static> {
     ))
 }
 
-/// The Settings body: configuration summary and account/auth section.
+/// The Settings body: configuration summary (connection, OIDC, theme, and
+/// per-booth debug details) and the account/auth section.
 fn settings_lines(app: &App, theme: &Theme) -> Vec<Line<'static>> {
     let config = app.config();
     let mut lines = vec![
@@ -2721,20 +2732,129 @@ fn settings_lines(app: &App, theme: &Theme) -> Vec<Line<'static>> {
         Line::raw(""),
         Line::raw(Screen::Settings.description()),
         Line::raw(""),
-        Line::from(vec![
-            Span::styled("Operator API: ", Style::new().fg(theme.dim)),
-            Span::raw(config.operator.base_url.clone()),
-        ]),
-        Line::from(vec![
-            Span::styled("OIDC issuer:  ", Style::new().fg(theme.dim)),
-            Span::raw(config.auth.issuer.clone()),
-        ]),
-        Line::from(vec![
-            Span::styled("Booths:       ", Style::new().fg(theme.dim)),
-            Span::raw(config.booths.len().to_string()),
-        ]),
+        subheader(theme, "Connection"),
+        kv_line(theme, "Operator API: ", config.operator.base_url.clone()),
+        kv_line(theme, "OIDC issuer:  ", config.auth.issuer.clone()),
+        kv_line(theme, "Client id:    ", config.auth.client_id.clone()),
+        kv_line(theme, "Scopes:       ", config.auth.scopes.clone()),
+        Line::raw(""),
+        subheader(theme, "Interface"),
+        kv_line(theme, "Theme:        ", config.ui.theme.clone()),
+        kv_line(
+            theme,
+            "Poll every:   ",
+            format!("{} ms", config.ui.poll_interval_ms),
+        ),
+        hint_line(theme, "Press t to cycle the theme."),
+        Line::raw(""),
+        subheader(theme, "Booths"),
     ];
+    if config.booths.is_empty() {
+        lines.push(note_line(theme, "No booths configured.".to_owned()));
+    } else {
+        for booth in &config.booths {
+            push_booth_lines(&mut lines, theme, booth);
+        }
+    }
+    lines.push(Line::raw(""));
     push_account_lines(&mut lines, theme, app.auth().phase());
+    lines
+}
+
+/// Append the configuration rows for a single configured booth, masking the
+/// debug token and shortening the pinned certificate fingerprint.
+fn push_booth_lines(lines: &mut Vec<Line<'static>>, theme: &Theme, booth: &BoothConfig) {
+    let label = booth.name.clone().unwrap_or_else(|| booth.id.clone());
+    lines.push(Line::from(Span::styled(
+        format!("• {label}"),
+        Style::new().fg(theme.fg).add_modifier(Modifier::BOLD),
+    )));
+    lines.push(kv_line(theme, "    id:          ", booth.id.clone()));
+    lines.push(kv_line(
+        theme,
+        "    debug URL:   ",
+        booth.debug_base_url.clone(),
+    ));
+    lines.push(kv_line(
+        theme,
+        "    debug token: ",
+        if booth.debug_token.is_some() {
+            "configured".to_owned()
+        } else {
+            "—".to_owned()
+        },
+    ));
+    lines.push(kv_line(
+        theme,
+        "    pinned cert: ",
+        booth
+            .pinned_sha256
+            .as_deref()
+            .map_or_else(|| "—".to_owned(), short_fingerprint),
+    ));
+}
+
+/// Shorten a 64-hex-char SHA-256 fingerprint to its first 16 characters with an
+/// ellipsis, leaving anything shorter untouched.
+fn short_fingerprint(hex: &str) -> String {
+    if hex.len() > 16 {
+        format!("{}…", &hex[..16])
+    } else {
+        hex.to_owned()
+    }
+}
+
+/// The About body: application metadata, the two backends, and a compact
+/// keyboard reference.
+fn about_lines(app: &App, theme: &Theme) -> Vec<Line<'static>> {
+    let mut lines = vec![
+        header(theme, "tb-operator"),
+        Line::raw(""),
+        kv_line(theme, "Version:     ", env!("CARGO_PKG_VERSION").to_owned()),
+        kv_line(
+            theme,
+            "Description: ",
+            env!("CARGO_PKG_DESCRIPTION").to_owned(),
+        ),
+        kv_line(
+            theme,
+            "Repository:  ",
+            env!("CARGO_PKG_REPOSITORY").to_owned(),
+        ),
+        kv_line(theme, "License:     ", env!("CARGO_PKG_LICENSE").to_owned()),
+        Line::raw(""),
+        subheader(theme, "Backends"),
+        kv_line(
+            theme,
+            "Operator API: ",
+            app.config().operator.base_url.clone(),
+        ),
+        note_line(
+            theme,
+            "Authentik bearer JWT (device-code login); REST + SSE event stream.".to_owned(),
+        ),
+        kv_line(
+            theme,
+            "Booths:       ",
+            app.config().booths.len().to_string(),
+        ),
+        note_line(
+            theme,
+            "On-device debug server: REST + telemetry WS + Prometheus /metrics.".to_owned(),
+        ),
+        Line::raw(""),
+        subheader(theme, "Keys"),
+        hint_line(theme, "Tab / Shift-Tab or ←/→  move between screens"),
+        hint_line(theme, "1-9                     jump to a screen"),
+        hint_line(theme, "↑/↓ or j/k              move the selection"),
+        hint_line(theme, "r / R                   refresh the active screen"),
+        hint_line(theme, "q or Esc                quit"),
+    ];
+    lines.push(Line::raw(""));
+    lines.push(note_line(
+        theme,
+        "Per-screen actions appear in the status bar at the bottom.".to_owned(),
+    ));
     lines
 }
 
@@ -2970,7 +3090,8 @@ fn format_expiry(expires_at: Option<OffsetDateTime>) -> String {
 mod tests {
     use super::{
         Screen, Theme, event_detail_lines, event_type_color, format_bytes, format_millis_f64,
-        format_uptime, percent, percent_bar, push_payload_lines, ratio_block, ratio_of, sparkline,
+        format_uptime, percent, percent_bar, push_payload_lines, ratio_block, ratio_of,
+        short_fingerprint, sparkline,
     };
     use tbo_core::domain::BoothEventType;
 
@@ -2999,6 +3120,14 @@ mod tests {
             assert!(!screen.short().is_empty());
             assert!(!screen.description().is_empty());
         }
+    }
+
+    #[test]
+    fn short_fingerprint_truncates_only_long_hex() {
+        let full = "a".repeat(64);
+        assert_eq!(short_fingerprint(&full), format!("{}…", "a".repeat(16)));
+        assert_eq!(short_fingerprint("abc"), "abc");
+        assert_eq!(short_fingerprint(&"b".repeat(16)), "b".repeat(16));
     }
 
     #[test]

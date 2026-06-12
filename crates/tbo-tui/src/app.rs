@@ -1,5 +1,6 @@
 //! Application state and the main event loop.
 
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::Result;
@@ -29,6 +30,7 @@ const TICK: Duration = Duration::from_millis(250);
 /// The running application.
 pub struct App {
     config: Config,
+    config_path: PathBuf,
     theme: Theme,
     screen: Screen,
     toasts: Toasts,
@@ -49,12 +51,13 @@ pub struct App {
 }
 
 impl App {
-    /// Build the application from a loaded configuration.
+    /// Build the application from a loaded configuration and the path it was
+    /// loaded from (used when persisting preference changes such as the theme).
     ///
     /// # Errors
     /// Returns an error if the authentication client or session store cannot be
     /// initialized.
-    pub fn new(config: Config) -> Result<Self> {
+    pub fn new(config: Config, config_path: PathBuf) -> Result<Self> {
         let theme = Theme::from_name(&config.ui.theme);
         let mut toasts = Toasts::default();
         toasts.info("Welcome to tb-operator. Press q to quit.");
@@ -88,6 +91,7 @@ impl App {
 
         Ok(Self {
             config,
+            config_path,
             theme,
             screen: Screen::Status,
             toasts,
@@ -430,6 +434,7 @@ impl App {
             KeyCode::Char('o' | 'O') if self.screen == Screen::Settings => {
                 self.auth.sign_out(&mut self.toasts);
             }
+            KeyCode::Char('t' | 'T') if self.screen == Screen::Settings => self.cycle_theme(),
             KeyCode::Char(c) if c.is_ascii_digit() && c != '0' => self.jump_to_digit(c),
             _ => {}
         }
@@ -721,6 +726,20 @@ impl App {
         }
     }
 
+    /// Switch to the next color theme, applying it immediately and persisting
+    /// the choice to the config file.
+    fn cycle_theme(&mut self) {
+        let next = Theme::next_name(&self.config.ui.theme);
+        self.config.ui.theme = next.to_owned();
+        self.theme = Theme::from_name(next);
+        match self.config.save_to(&self.config_path) {
+            Ok(()) => self.toasts.info(format!("Theme: {next}")),
+            Err(err) => self.toasts.warn(format!(
+                "Theme set to {next}, but saving config failed: {err}"
+            )),
+        }
+    }
+
     /// Run a booth simulate action, gating on booth availability, the booth's
     /// `allowControls` setting, and any in-flight request.
     fn debug_simulate(&mut self, action: impl FnOnce(&mut DebugController)) {
@@ -821,7 +840,7 @@ impl App {
                 }
             }
             Screen::Tokens => self.tokens.refresh(),
-            Screen::Settings => {}
+            Screen::Settings | Screen::About => {}
         }
     }
 

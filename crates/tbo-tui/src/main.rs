@@ -32,16 +32,17 @@ use crate::cli::Cli;
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
-    let config = match cli.config.as_deref() {
-        Some(path) => Config::load_from(path)?,
-        None => Config::load()?,
+    let config_path = match cli.config.as_deref() {
+        Some(path) => path.to_path_buf(),
+        None => Config::default_path()?,
     };
+    let config = Config::load_from(&config_path)?;
 
     let _log_guard = logging::init();
 
     // Build the app (and its auth/session state) before taking over the
     // terminal, so a setup failure surfaces as a normal error.
-    let app = App::new(config)?;
+    let app = App::new(config, config_path)?;
 
     let mut terminal = tui::init()?;
     let result = app.run(&mut terminal).await;
