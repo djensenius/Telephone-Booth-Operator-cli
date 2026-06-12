@@ -1,8 +1,9 @@
 //! The Authentik authentication client: device-code flow and token refresh.
 
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use tbo_core::config::AuthConfig;
+use tokio::time::Instant;
 
 use crate::endpoints::Endpoints;
 use crate::error::{AuthError, Result};

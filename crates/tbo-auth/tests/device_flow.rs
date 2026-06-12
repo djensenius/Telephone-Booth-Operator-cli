@@ -235,6 +235,34 @@ async fn poll_for_token_surfaces_denied() {
 }
 
 #[tokio::test]
+async fn poll_for_token_expires_at_deadline() {
+    tokio::time::pause();
+    // Only ever returns "pending"; the loop must stop at the device-code
+    // deadline. This relies on the deadline using `tokio::time::Instant` so it
+    // advances together with the virtualized `sleep`.
+    let transport = FakeTransport::new(vec![
+        ok(400, r#"{"error":"authorization_pending"}"#),
+        ok(400, r#"{"error":"authorization_pending"}"#),
+        ok(400, r#"{"error":"authorization_pending"}"#),
+        ok(400, r#"{"error":"authorization_pending"}"#),
+        ok(400, r#"{"error":"authorization_pending"}"#),
+    ]);
+    let client = client_with(transport);
+    let authorization = DeviceAuthorization {
+        device_code: "dc".to_owned(),
+        user_code: "U".to_owned(),
+        verification_uri: "https://auth.example/device".to_owned(),
+        verification_uri_complete: None,
+        expires_in: 3,
+        interval: 1,
+    };
+
+    let error = client.poll_for_token(&authorization).await.unwrap_err();
+
+    assert!(matches!(error, AuthError::ExpiredToken));
+}
+
+#[tokio::test]
 async fn refresh_returns_tokens_on_success() {
     let transport = FakeTransport::new(vec![ok(
         200,
