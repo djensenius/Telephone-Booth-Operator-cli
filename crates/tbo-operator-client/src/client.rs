@@ -10,10 +10,11 @@ use time::format_description::well_known::Rfc3339;
 use futures::stream::{BoxStream, Stream, StreamExt};
 
 use tbo_core::domain::{
-    BoothEventList, BoothEventRecord, BoothStatus, BoothSystemSnapshotList, CallSessionDetail,
-    CallSessionList, Message, MessageDecision, MessageDecisionKind, MessageList, MessageStatus,
-    Moderation, OperatorMe, Question, QuestionCreate, QuestionList, QuestionStatus, StatsOverview,
-    StatsWindow, StatusHistory, Transcription, TranscriptionList, TranslationSubmit, UploadSasKind,
+    ApiToken, ApiTokenCreated, ApiTokenUsageBucket, BoothEventList, BoothEventRecord, BoothStatus,
+    BoothSystemSnapshotList, CallSessionDetail, CallSessionList, CreateApiTokenRequest, Message,
+    MessageDecision, MessageDecisionKind, MessageList, MessageStatus, Moderation, OperatorMe,
+    Question, QuestionCreate, QuestionList, QuestionStatus, StatsOverview, StatsWindow,
+    StatusHistory, Transcription, TranscriptionList, TranslationSubmit, UploadSasKind,
     UploadSasRequest, UploadSlot,
 };
 
@@ -221,6 +222,42 @@ impl<T: HttpTransport, A: TokenProvider> OperatorClient<T, A> {
         self.get_json("/v1/system/current", &[], true).await
     }
 
+    /// List the signed-in operator's API tokens (`GET /v1/api-tokens`).
+    ///
+    /// The endpoint returns a bare array (newest first); the secret is never
+    /// included, only its `last4`.
+    ///
+    /// # Errors
+    /// Returns [`OperatorError::Unauthenticated`] when signed out, or an
+    /// HTTP/transport error.
+    pub async fn api_tokens(&self) -> Result<Vec<ApiToken>> {
+        self.get_json("/v1/api-tokens", &[], true).await
+    }
+
+    /// Daily usage buckets for a single API token
+    /// (`GET /v1/api-tokens/{id}/usage`).
+    ///
+    /// `days` bounds the look-back window (server default 30, max 365). The
+    /// response is a bare array of buckets, empty when the token is unused
+    /// within the window.
+    ///
+    /// # Errors
+    /// Returns [`OperatorError::Unauthenticated`] when signed out,
+    /// [`OperatorError::NotFound`] for an unknown id, or an HTTP/transport
+    /// error.
+    pub async fn api_token_usage(
+        &self,
+        id: &str,
+        days: Option<u32>,
+    ) -> Result<Vec<ApiTokenUsageBucket>> {
+        let mut query = Vec::new();
+        if let Some(days) = days {
+            query.push(("days", days.to_string()));
+        }
+        self.get_json(&format!("/v1/api-tokens/{id}/usage"), &query, true)
+            .await
+    }
+
     /// Resolve the bearer token, issue the request, and decode the response.
     async fn get_json<R: DeserializeOwned>(
         &self,
@@ -372,6 +409,41 @@ impl<T: WriteTransport, A: TokenProvider> OperatorClient<T, A> {
     /// HTTP/transport error.
     pub async fn delete_message(&self, id: &str) -> Result<()> {
         self.delete_no_content(&format!("/v1/messages/{id}")).await
+    }
+
+    /// Create a new API token (`POST /v1/api-tokens`).
+    ///
+    /// Returns the created token including its one-time plaintext secret
+    /// (server status `201`); the secret is never retrievable again, so it must
+    /// be surfaced to the operator immediately. `expires_in_days` bounds the
+    /// lifetime (max 3650); the token never expires when omitted.
+    ///
+    /// # Errors
+    /// Returns [`OperatorError::Unauthenticated`] when signed out, or an
+    /// HTTP/transport error.
+    pub async fn create_api_token(
+        &self,
+        name: String,
+        expires_in_days: Option<u32>,
+    ) -> Result<ApiTokenCreated> {
+        let body = CreateApiTokenRequest {
+            name,
+            expires_in_days,
+        };
+        self.post_json("/v1/api-tokens", &body).await
+    }
+
+    /// Revoke an API token (`DELETE /v1/api-tokens/{id}`).
+    ///
+    /// Idempotent server-side: revoking an already-revoked or unknown token
+    /// still returns `204`.
+    ///
+    /// # Errors
+    /// Returns [`OperatorError::Unauthenticated`] when signed out, or an
+    /// HTTP/transport error.
+    pub async fn revoke_api_token(&self, id: &str) -> Result<()> {
+        self.delete_no_content(&format!("/v1/api-tokens/{id}"))
+            .await
     }
 
     /// Publish a question so callers can be offered it, clearing any prior
@@ -1155,6 +1227,105 @@ mod tests {
 
         assert!(matches!(err, OperatorError::InvalidRequest(_)));
         assert_eq!(transport.calls().len(), 1, "must stop before uploading");
+    }
+
+    #[tokio::test]
+    async fn api_tokens_decodes_the_bare_array() {
+        let body = r#"[{"id":"t1","name":"ci","last4":"abcd","createdAt":"2026-01-01T00:00:00Z","expiresAt":null,"lastUsedAt":null,"revokedAt":null}]"#;
+        let transport = FakeTransport::with_responses(vec![ok(body)]);
+        let client = authed(transport.clone());
+
+        let tokens = client.api_tokens().await.unwrap();
+
+        assert_eq!(tokens.len(), 1);
+        assert_eq!(tokens[0].id, "t1");
+        assert_eq!(tokens[0].last4, "abcd");
+        let calls = transport.calls();
+        assert_eq!(calls[0].method, "GET");
+        assert_eq!(calls[0].path, "/v1/api-tokens");
+        assert!(calls[0].query.is_empty());
+        assert_eq!(calls[0].bearer.as_deref(), Some("token-123"));
+    }
+
+    #[tokio::test]
+    async fn api_token_usage_forwards_the_days_query() {
+        let body = r#"[{"date":"2026-01-01","count":3}]"#;
+        let transport = FakeTransport::with_responses(vec![ok(body)]);
+        let client = authed(transport.clone());
+
+        let buckets = client.api_token_usage("t1", Some(7)).await.unwrap();
+
+        assert_eq!(
+            buckets,
+            vec![ApiTokenUsageBucket {
+                date: "2026-01-01".to_owned(),
+                count: 3,
+            }]
+        );
+        let calls = transport.calls();
+        assert_eq!(calls[0].path, "/v1/api-tokens/t1/usage");
+        assert_eq!(calls[0].query, vec![("days".to_owned(), "7".to_owned())]);
+    }
+
+    #[tokio::test]
+    async fn create_api_token_posts_name_and_returns_plaintext() {
+        let created = r#"{"id":"t1","name":"ci","last4":"wxyz","createdAt":"2026-01-01T00:00:00Z","expiresAt":null,"plaintext":"tbk_secret_value"}"#;
+        let transport = FakeTransport::with_responses(vec![HttpResponse {
+            status: 201,
+            body: created.to_owned(),
+        }]);
+        let client = authed(transport.clone());
+
+        let token = client
+            .create_api_token("ci".to_owned(), Some(30))
+            .await
+            .unwrap();
+
+        assert_eq!(token.plaintext, "tbk_secret_value");
+        let calls = transport.calls();
+        assert_eq!(calls[0].method, "POST");
+        assert_eq!(calls[0].path, "/v1/api-tokens");
+        let request: CreateApiTokenRequest =
+            serde_json::from_str(calls[0].body.as_deref().unwrap()).unwrap();
+        assert_eq!(request.name, "ci");
+        assert_eq!(request.expires_in_days, Some(30));
+    }
+
+    #[tokio::test]
+    async fn create_api_token_omits_expiry_when_none() {
+        let created = r#"{"id":"t1","name":"ci","last4":"wxyz","createdAt":"2026-01-01T00:00:00Z","expiresAt":null,"plaintext":"secret"}"#;
+        let transport = FakeTransport::with_responses(vec![HttpResponse {
+            status: 201,
+            body: created.to_owned(),
+        }]);
+        let client = authed(transport.clone());
+
+        client
+            .create_api_token("ci".to_owned(), None)
+            .await
+            .unwrap();
+
+        let body = transport.calls()[0].body.clone().unwrap();
+        assert!(
+            !body.contains("expiresInDays"),
+            "a never-expiring token must omit the field, got {body}"
+        );
+    }
+
+    #[tokio::test]
+    async fn revoke_api_token_deletes_on_no_content() {
+        let transport = FakeTransport::with_responses(vec![HttpResponse {
+            status: 204,
+            body: String::new(),
+        }]);
+        let client = authed(transport.clone());
+
+        client.revoke_api_token("t1").await.unwrap();
+
+        let calls = transport.calls();
+        assert_eq!(calls[0].method, "DELETE");
+        assert_eq!(calls[0].path, "/v1/api-tokens/t1");
+        assert_eq!(calls[0].bearer.as_deref(), Some("token-123"));
     }
 
     /// An SSE transport that replays canned byte chunks and records the query.

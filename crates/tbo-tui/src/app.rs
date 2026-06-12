@@ -13,6 +13,7 @@ use crate::auth::{AuthController, AuthPhase};
 use crate::data::{
     EventsController, MessagesController, QuestionsController, SessionTokenProvider,
     SessionsController, SharedSession, StatsController, StatusController, SystemController,
+    TokensController,
 };
 use crate::event::{AppEvent, EventLoop};
 use crate::tui::Tui;
@@ -39,6 +40,7 @@ pub struct App {
     events: EventsController,
     stats: StatsController,
     system: SystemController,
+    tokens: TokensController,
     modal: Option<Modal>,
     should_quit: bool,
 }
@@ -85,7 +87,8 @@ impl App {
             sessions,
             events: EventsController::new(api.clone()),
             stats: StatsController::new(api.clone()),
-            system: SystemController::new(api),
+            system: SystemController::new(api.clone()),
+            tokens: TokensController::new(api),
             modal: None,
             should_quit: false,
         })
@@ -192,6 +195,12 @@ impl App {
         &self.system
     }
 
+    /// The API-tokens controller (drives the Tokens screen).
+    #[must_use]
+    pub fn tokens(&self) -> &TokensController {
+        &self.tokens
+    }
+
     /// The active modal overlay, when one is open.
     #[must_use]
     pub fn modal(&self) -> Option<&Modal> {
@@ -215,6 +224,8 @@ impl App {
                     self.events.tick(self.screen == Screen::Events);
                     self.stats.tick(self.screen == Screen::Stats);
                     self.system.tick(self.screen == Screen::LiveSystem);
+                    self.tokens.tick(self.screen == Screen::Tokens);
+                    self.drain_token_actions();
                     self.toasts.prune();
                 }
                 AppEvent::Key(key) => self.on_key(key),
@@ -239,7 +250,9 @@ impl App {
         match key.code {
             KeyCode::Char('q') => self.should_quit = true,
             KeyCode::Esc => {
-                if self.auth.is_in_progress() {
+                if self.screen == Screen::Tokens && self.tokens.dismiss_revealed() {
+                    self.toasts.info("Secret dismissed.");
+                } else if self.auth.is_in_progress() {
                     self.auth.cancel();
                     self.toasts.info("Login cancelled.");
                 } else {
@@ -284,6 +297,15 @@ impl App {
             }
             KeyCode::Char('n' | 'N') if self.screen == Screen::Questions => {
                 self.open_new_question_prompt();
+            }
+            KeyCode::Char('n' | 'N') if self.screen == Screen::Tokens => {
+                self.open_new_token_prompt();
+            }
+            KeyCode::Char('d' | 'D') if self.screen == Screen::Tokens => {
+                self.open_revoke_confirm();
+            }
+            KeyCode::Char('u' | 'U') if self.screen == Screen::Tokens => {
+                self.tokens.load_usage_selected();
             }
             KeyCode::Char('l' | 'L') if self.screen == Screen::Settings => self.begin_login(),
             KeyCode::Char('o' | 'O') if self.screen == Screen::Settings => {
@@ -333,6 +355,11 @@ impl App {
                 let path = modal.input().to_owned();
                 self.start_question_create(prompt, path);
             }
+            Intent::NewApiToken => {
+                let name = modal.input().to_owned();
+                self.start_token_create(name);
+            }
+            Intent::RevokeApiToken => self.tokens.revoke_selected(),
         }
     }
 
@@ -453,6 +480,59 @@ impl App {
         }
     }
 
+    /// Open a text prompt for naming a new API token.
+    fn open_new_token_prompt(&mut self) {
+        if self.tokens.is_action_in_flight() {
+            self.toasts.warn("An action is already in progress.");
+            return;
+        }
+        self.modal = Some(Modal::prompt(
+            "New API token",
+            "Token name",
+            Intent::NewApiToken,
+        ));
+    }
+
+    /// Kick off a token create from the entered name, guarding against
+    /// overlapping requests.
+    fn start_token_create(&mut self, name: String) {
+        if self.tokens.is_action_in_flight() {
+            self.toasts.warn("An action is already in progress.");
+            return;
+        }
+        self.tokens.create_token(name);
+    }
+
+    /// Open a confirmation modal for revoking the selected token.
+    fn open_revoke_confirm(&mut self) {
+        if self.tokens.is_action_in_flight() {
+            self.toasts.warn("An action is already in progress.");
+            return;
+        }
+        if self.tokens.selected_token().is_none() {
+            self.toasts.info("Select a token first.");
+            return;
+        }
+        self.modal = Some(Modal::confirm(
+            "Revoke token",
+            "Revoke the selected API token? Any client using it will stop working immediately.",
+            Intent::RevokeApiToken,
+        ));
+    }
+
+    /// Surface completed token-action outcomes as toasts, reloading the list
+    /// after a successful change.
+    fn drain_token_actions(&mut self) {
+        for outcome in self.tokens.drain_actions() {
+            if outcome.ok {
+                self.toasts.info(outcome.message);
+                self.tokens.refresh();
+            } else {
+                self.toasts.error(outcome.message);
+            }
+        }
+    }
+
     /// Refresh the data backing the active screen, if it has any.
     fn refresh_active(&mut self) {
         match self.screen {
@@ -463,6 +543,7 @@ impl App {
             Screen::Events => self.events.refresh(),
             Screen::Stats => self.stats.refresh(),
             Screen::LiveSystem => self.system.refresh(),
+            Screen::Tokens => self.tokens.refresh(),
             _ => {}
         }
     }
@@ -474,6 +555,7 @@ impl App {
             Screen::Questions => self.questions.select_next(),
             Screen::Sessions => self.sessions.select_next(),
             Screen::Events => self.events.select_next(),
+            Screen::Tokens => self.tokens.select_next(),
             _ => {}
         }
     }
@@ -485,6 +567,7 @@ impl App {
             Screen::Questions => self.questions.select_prev(),
             Screen::Sessions => self.sessions.select_prev(),
             Screen::Events => self.events.select_prev(),
+            Screen::Tokens => self.tokens.select_prev(),
             _ => {}
         }
     }
