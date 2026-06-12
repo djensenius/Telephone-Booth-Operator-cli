@@ -48,7 +48,9 @@ impl StoredSession {
         self.expires_at.is_none_or(|expiry| now + margin >= expiry)
     }
 
-    /// Whether the access token has already expired (no grace margin).
+    /// Whether the access token has already expired (no grace margin), or has
+    /// no known expiry (in which case it is treated as expired so a refresh is
+    /// forced).
     #[must_use]
     pub fn is_expired(&self, now: OffsetDateTime) -> bool {
         self.expires_at.is_none_or(|expiry| now >= expiry)
