@@ -9,6 +9,7 @@ use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, List, ListItem, ListState, Paragraph, Wrap};
+use serde_json::Value;
 use std::time::Instant;
 use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
@@ -66,6 +67,9 @@ const ALL: [Screen; 11] = [
     Screen::Tokens,
     Screen::Settings,
 ];
+
+/// Maximum number of pretty-printed JSON payload lines shown in event detail.
+const PAYLOAD_MAX_LINES: usize = 40;
 
 impl Screen {
     /// All screens in tab order.
@@ -180,6 +184,7 @@ pub fn render(app: &App, frame: &mut Frame, area: Rect) {
         Screen::Messages => render_messages(app, frame, area),
         Screen::Questions => render_questions(app, frame, area),
         Screen::Sessions => render_sessions(app, frame, area),
+        Screen::Events => render_events(app, frame, area),
         Screen::Stats => {
             render_paragraph(frame, area, theme, "Statistics", stats_lines(app, theme));
         }
@@ -832,6 +837,163 @@ fn push_timeline_lines(
                 Span::raw(error.clone()),
             ]));
         }
+    }
+}
+
+/// Render the Events screen: a master list of events beside a detail pane.
+fn render_events(app: &App, frame: &mut Frame, area: Rect) {
+    let theme = app.theme();
+    let controller = app.events();
+    match controller.state() {
+        Remote::Ready { value, fetched_at } if !value.is_empty() => {
+            let columns =
+                Layout::horizontal([Constraint::Percentage(42), Constraint::Min(28)]).split(area);
+            render_event_list(frame, columns[0], theme, value, controller.selected_index());
+
+            let mut detail = event_detail_lines(theme, controller.selected_event());
+            detail.push(Line::raw(""));
+            if controller.is_refreshing() {
+                detail.push(note_line(theme, "Refreshing…".to_owned()));
+            } else {
+                detail.push(note_line(theme, format!("Fetched {}.", ago(*fetched_at))));
+            }
+            render_paragraph(frame, columns[1], theme, "Detail", detail);
+        }
+        other => render_paragraph(
+            frame,
+            area,
+            theme,
+            "Events",
+            events_status_lines(theme, other),
+        ),
+    }
+}
+
+/// Body lines for the non-list Events states (loading, empty, or failed).
+fn events_status_lines(theme: &Theme, state: &Remote<Vec<BoothEventRecord>>) -> Vec<Line<'static>> {
+    let mut lines = vec![header(theme, Screen::Events.title()), Line::raw("")];
+    match state {
+        Remote::Idle | Remote::Loading => lines.push(hint_line(theme, "Loading events…")),
+        Remote::Ready { .. } => {
+            lines.push(note_line(theme, "No events.".to_owned()));
+            lines.push(hint_line(theme, "Press r to reload."));
+        }
+        Remote::Failed { error, at } => {
+            lines.push(Line::from(Span::styled(
+                format!("Failed to load events {}.", ago(*at)),
+                Style::new().fg(theme.error),
+            )));
+            lines.push(Line::from(vec![
+                Span::styled("Reason: ", Style::new().fg(theme.dim)),
+                Span::raw(error.clone()),
+            ]));
+            lines.push(hint_line(
+                theme,
+                "Press r to retry; sign in via Settings if unauthorized.",
+            ));
+        }
+    }
+    lines
+}
+
+/// Render the scrollable list of events with the selected row highlighted.
+fn render_event_list(
+    frame: &mut Frame,
+    area: Rect,
+    theme: &Theme,
+    events: &[BoothEventRecord],
+    selected: usize,
+) {
+    let items: Vec<ListItem> = events
+        .iter()
+        .map(|event| {
+            ListItem::new(Line::from(vec![
+                Span::styled(
+                    format!("{} ", short_time(event.occurred_at)),
+                    Style::new().fg(theme.dim),
+                ),
+                Span::styled(
+                    event_type_label(event.event_type),
+                    Style::new().fg(event_type_color(theme, event.event_type)),
+                ),
+            ]))
+        })
+        .collect();
+    let list = List::new(items)
+        .block(
+            Block::bordered()
+                .border_style(Style::new().fg(theme.dim))
+                .title(" Events "),
+        )
+        .highlight_style(
+            Style::new()
+                .fg(theme.accent)
+                .add_modifier(Modifier::REVERSED | Modifier::BOLD),
+        )
+        .highlight_symbol("> ");
+    let mut list_state = ListState::default();
+    list_state.select(Some(selected));
+    frame.render_stateful_widget(list, area, &mut list_state);
+}
+
+/// Build the detail-pane lines for the selected event, including its payload.
+fn event_detail_lines(theme: &Theme, event: Option<&BoothEventRecord>) -> Vec<Line<'static>> {
+    let Some(event) = event else {
+        return vec![note_line(theme, "No event selected.".to_owned())];
+    };
+    let mut lines = vec![
+        Line::from(Span::styled(
+            event_type_label(event.event_type),
+            Style::new()
+                .fg(event_type_color(theme, event.event_type))
+                .add_modifier(Modifier::BOLD),
+        )),
+        Line::raw(""),
+        kv_line(theme, "Occurred:  ", format_ts(event.occurred_at)),
+        kv_line(theme, "Received:  ", format_ts(event.received_at)),
+        kv_line(theme, "Booth:     ", event.booth_id.clone()),
+        kv_line(theme, "Boot:      ", event.boot_id.clone()),
+        kv_line(theme, "Event id:  ", event.event_id.clone()),
+    ];
+    if let Some(session) = &event.session_id {
+        lines.push(kv_line(theme, "Session:   ", session.clone()));
+    }
+    if let Some(recording) = &event.recording_id {
+        lines.push(kv_line(theme, "Recording: ", recording.clone()));
+    }
+    if let Some(version) = &event.version {
+        lines.push(kv_line(theme, "Version:   ", version.clone()));
+    }
+    push_payload_lines(&mut lines, theme, &event.payload);
+    lines
+}
+
+/// Append a pretty-printed JSON `payload` block (truncated) to the detail lines.
+fn push_payload_lines(lines: &mut Vec<Line<'static>>, theme: &Theme, payload: &Value) {
+    if payload.is_null() {
+        return;
+    }
+    let pretty = serde_json::to_string_pretty(payload).unwrap_or_else(|_| payload.to_string());
+    lines.push(Line::raw(""));
+    lines.push(subheader(theme, "Payload"));
+    for (idx, raw) in pretty.lines().enumerate() {
+        if idx >= PAYLOAD_MAX_LINES {
+            lines.push(note_line(theme, "… payload truncated.".to_owned()));
+            break;
+        }
+        lines.push(Line::from(Span::styled(
+            raw.to_owned(),
+            Style::new().fg(theme.dim),
+        )));
+    }
+}
+
+/// Theme colour used to highlight an event row/heading by its type.
+fn event_type_color(theme: &Theme, event_type: BoothEventType) -> Color {
+    match event_type {
+        BoothEventType::Error | BoothEventType::UploadFailed => theme.error,
+        BoothEventType::CallStarted | BoothEventType::CallEnded => theme.ok,
+        _ => theme.fg,
     }
 }
 
@@ -1786,9 +1948,10 @@ fn format_expiry(expires_at: Option<OffsetDateTime>) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        Screen, format_bytes, format_millis_f64, format_uptime, percent, percent_bar, ratio_block,
-        ratio_of, sparkline,
+        Screen, Theme, event_detail_lines, event_type_color, format_bytes, format_millis_f64,
+        format_uptime, percent, percent_bar, push_payload_lines, ratio_block, ratio_of, sparkline,
     };
+    use tbo_core::domain::BoothEventType;
 
     #[test]
     fn index_round_trips_for_every_screen() {
@@ -1841,6 +2004,43 @@ mod tests {
         assert_eq!(line.chars().count(), 3);
         assert!(line.starts_with('▁'));
         assert!(line.ends_with('█'));
+    }
+
+    #[test]
+    fn event_type_color_flags_errors_and_calls() {
+        let theme = Theme::default();
+        assert_eq!(event_type_color(&theme, BoothEventType::Error), theme.error);
+        assert_eq!(
+            event_type_color(&theme, BoothEventType::UploadFailed),
+            theme.error
+        );
+        assert_eq!(
+            event_type_color(&theme, BoothEventType::CallStarted),
+            theme.ok
+        );
+        assert_eq!(event_type_color(&theme, BoothEventType::Log), theme.fg);
+    }
+
+    #[test]
+    fn event_detail_lines_handle_missing_selection() {
+        let theme = Theme::default();
+        assert_eq!(event_detail_lines(&theme, None).len(), 1);
+    }
+
+    #[test]
+    fn payload_lines_skip_null_and_render_objects() {
+        let theme = Theme::default();
+        let mut lines = Vec::new();
+        push_payload_lines(&mut lines, &theme, &serde_json::Value::Null);
+        assert!(lines.is_empty());
+
+        push_payload_lines(
+            &mut lines,
+            &theme,
+            &serde_json::json!({ "digit": "5", "outcome": "answered" }),
+        );
+        // A blank spacer, the "Payload" subheader, and the pretty-printed body.
+        assert!(lines.len() > 2);
     }
 
     #[test]
