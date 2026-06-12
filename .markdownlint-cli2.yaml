@@ -1,0 +1,29 @@
+# markdownlint-cli2 configuration shared by all docs/ markdown.
+config:
+  default: true
+  # Allow long lines in tables and code blocks.
+  MD013:
+    line_length: 120
+    code_blocks: false
+    tables: false
+  # Permit raw HTML for the rare details / summary block.
+  MD033:
+    allowed_elements:
+      - details
+      - summary
+      - br
+      - sub
+      - sup
+  # Allow duplicate adjacent headings under different parents.
+  MD024:
+    siblings_only: true
+  # Do not require padded/aligned table columns; compact tables are intentional.
+  MD060: false
+  # First line need not be a top-level heading (front-matter friendly).
+  MD041: false
+globs:
+  - 'docs/**/*.md'
+  - 'README.md'
+ignores:
+  - '**/node_modules/**'
+  - '**/target/**'

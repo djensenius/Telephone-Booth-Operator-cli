@@ -1,0 +1,48 @@
+name: audit
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'crates/**/Cargo.toml'
+      - '.github/workflows/audit.yml'
+      - 'deny.toml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'crates/**/Cargo.toml'
+      - '.github/workflows/audit.yml'
+      - 'deny.toml'
+  schedule:
+    - cron: '17 6 * * 1'
+  workflow_dispatch: {}
+
+# Default to read-only; the cargo-audit job widens its own scope below because
+# rustsec/audit-check creates a check run (and issues on the scheduled run).
+permissions:
+  contents: read
+
+jobs:
+  cargo-deny:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: EmbarkStudios/cargo-deny-action@7343aaf3a9563e7c5e0e8bac3896a292217cb163 # v2.0.19
+        with:
+          command: check
+          arguments: --all-features
+
+  cargo-audit:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      checks: write
+      issues: write
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: rustsec/audit-check@69366f33c96575abad1ee0dba8212993eecbe998 # v2
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
