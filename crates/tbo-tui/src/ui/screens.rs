@@ -17,6 +17,7 @@ use std::time::Instant;
 use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
 
+use tbo_booth_client::{GpioPinSnapshot, LogEntry};
 use tbo_core::domain::{
     ApiToken, ApiTokenCreated, ApiTokenUsageBucket, BoothEventRecord, BoothEventType, BoothState,
     BoothStatus, BoothSystemSnapshot, BoothSystemSnapshotEnvelope, CallOutcome, CallSession,
@@ -27,7 +28,7 @@ use tbo_metrics::{BoothMetrics, MetricsHistory};
 
 use crate::app::App;
 use crate::auth::AuthPhase;
-use crate::data::{Remote, SystemHealthController};
+use crate::data::{DebugController, Remote, SystemHealthController};
 use crate::ui::theme::Theme;
 
 /// The set of top-level screens, in tab order.
@@ -207,15 +208,7 @@ pub fn render(app: &App, frame: &mut Frame, area: Rect) {
         Screen::Settings => {
             render_paragraph(frame, area, theme, "Settings", settings_lines(app, theme));
         }
-        screen @ Screen::Debug => {
-            render_paragraph(
-                frame,
-                area,
-                theme,
-                screen.title(),
-                placeholder_lines(screen, theme),
-            );
-        }
+        Screen::Debug => render_debug(app, frame, area),
     }
 }
 
@@ -2141,6 +2134,367 @@ fn render_health_status(
     frame.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
+/// Render the booth Debug panel for the configured booth.
+///
+/// Falls back to a guidance paragraph when no booth is configured, and to a
+/// status paragraph while the first poll is pending or has only failed.
+fn render_debug(app: &App, frame: &mut Frame, area: Rect) {
+    let theme = app.theme();
+    let Some(controller) = app.debug() else {
+        render_paragraph(frame, area, theme, "Debug", debug_unconfigured_lines(theme));
+        return;
+    };
+    if controller.state().is_none() && controller.config().is_none() {
+        render_paragraph(
+            frame,
+            area,
+            theme,
+            &format!("Debug — {}", controller.label()),
+            debug_pending_lines(theme, controller),
+        );
+        return;
+    }
+
+    let block = section_block(
+        theme,
+        format!(
+            " Debug — {} · {} ",
+            controller.label(),
+            controller.base_url()
+        ),
+    );
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let rows = Layout::vertical([
+        Constraint::Length(7),
+        Constraint::Min(6),
+        Constraint::Length(8),
+        Constraint::Length(1),
+    ])
+    .split(inner);
+
+    let top =
+        Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)]).split(rows[0]);
+    render_debug_state(frame, top[0], theme, controller);
+    render_debug_audio(frame, top[1], theme, controller);
+
+    let middle =
+        Layout::horizontal([Constraint::Percentage(45), Constraint::Percentage(55)]).split(rows[1]);
+    render_debug_gpio(frame, middle[0], theme, controller);
+    render_debug_logs(frame, middle[1], theme, controller);
+
+    render_debug_config(frame, rows[2], theme, controller);
+    render_debug_status(frame, rows[3], theme, controller);
+}
+
+/// Guidance shown on the Debug screen when no booth is configured.
+fn debug_unconfigured_lines(theme: &Theme) -> Vec<Line<'static>> {
+    vec![
+        header(theme, "Debug"),
+        Line::raw(""),
+        Line::raw("No booth is configured, so there is no debug server to reach."),
+        Line::raw(""),
+        hint_line(
+            theme,
+            "Add a [[booths]] entry (id + debug-base-url, optional debug-token) to config.toml.",
+        ),
+    ]
+}
+
+/// Status shown before the first successful poll (pending or only failed).
+fn debug_pending_lines(theme: &Theme, controller: &DebugController) -> Vec<Line<'static>> {
+    let mut lines = vec![header(theme, "Debug"), Line::raw("")];
+    if let Some((error, at)) = controller.last_error() {
+        lines.push(Line::from(Span::styled(
+            format!("Failed to reach booth debug server: {error}"),
+            Style::new().fg(theme.error),
+        )));
+        lines.push(note_line(theme, format!("Last attempt {}.", ago(*at))));
+        lines.push(hint_line(
+            theme,
+            "Press r to retry. Check the booth URL/token and Tailscale reachability.",
+        ));
+    } else {
+        lines.push(note_line(
+            theme,
+            format!("Polling {} for debug snapshots…", controller.label()),
+        ));
+    }
+    lines
+}
+
+/// The booth state-machine panel.
+fn render_debug_state(frame: &mut Frame, area: Rect, theme: &Theme, controller: &DebugController) {
+    let mut lines = Vec::new();
+    if let Some(state) = controller.state() {
+        lines.push(Line::from(vec![
+            Span::styled("State:    ", Style::new().fg(theme.dim)),
+            Span::styled(
+                state.state.clone(),
+                Style::new()
+                    .fg(debug_state_color(theme, &state.state))
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ]));
+        lines.push(kv_line(theme, "Updated:  ", state.updated_at.clone()));
+        if let Some(question) = &state.current_question_id {
+            lines.push(kv_line(theme, "Question: ", question.clone()));
+        }
+        if let Some(message) = &state.current_message_id {
+            lines.push(kv_line(theme, "Message:  ", message.clone()));
+        }
+        if let Some(error) = &state.last_error {
+            lines.push(Line::from(vec![
+                Span::styled("Error:    ", Style::new().fg(theme.dim)),
+                Span::styled(error.clone(), Style::new().fg(theme.error)),
+            ]));
+        }
+    } else {
+        lines.push(note_line(theme, "No state reported.".to_owned()));
+    }
+    let paragraph = Paragraph::new(lines)
+        .block(section_block(theme, " State ".to_owned()))
+        .wrap(Wrap { trim: true });
+    frame.render_widget(paragraph, area);
+}
+
+/// Accent color for a booth state name (red for errors, dim when idle).
+fn debug_state_color(theme: &Theme, state: &str) -> Color {
+    match state {
+        "error" => theme.error,
+        "idle" => theme.dim,
+        _ => theme.ok,
+    }
+}
+
+/// The audio level-meter panel.
+fn render_debug_audio(frame: &mut Frame, area: Rect, theme: &Theme, controller: &DebugController) {
+    let mut lines = Vec::new();
+    if let Some(audio) = controller.audio() {
+        lines.push(audio_meter_line(
+            theme,
+            "In  ",
+            audio.input_level_dbfs,
+            audio.input_peak_dbfs,
+        ));
+        lines.push(audio_meter_line(
+            theme,
+            "Out ",
+            audio.output_level_dbfs,
+            audio.output_peak_dbfs,
+        ));
+        if let Some(device) = &audio.current_device {
+            lines.push(kv_line(theme, "Device: ", device.clone()));
+        }
+        if let Some(rate) = audio.sample_rate_hz {
+            lines.push(kv_line(theme, "Rate:   ", format!("{rate} Hz")));
+        }
+    } else {
+        lines.push(note_line(theme, "No audio meters reported.".to_owned()));
+    }
+    let paragraph = Paragraph::new(lines)
+        .block(section_block(theme, " Audio ".to_owned()))
+        .wrap(Wrap { trim: true });
+    frame.render_widget(paragraph, area);
+}
+
+/// One audio channel meter: a level bar with level and peak dBFS read-outs.
+fn audio_meter_line(
+    theme: &Theme,
+    label: &'static str,
+    level_dbfs: f32,
+    peak_dbfs: f32,
+) -> Line<'static> {
+    let ratio = dbfs_ratio(level_dbfs);
+    Line::from(vec![
+        Span::styled(label, Style::new().fg(theme.dim)),
+        Span::raw(format!(
+            "{} {:>6.1} dBFS  peak {:>6.1}",
+            percent_bar(ratio),
+            f64::from(level_dbfs),
+            f64::from(peak_dbfs),
+        )),
+    ])
+}
+
+/// Map a dBFS level (`-120..=0`) to a `0.0..=1.0` meter ratio.
+fn dbfs_ratio(dbfs: f32) -> f64 {
+    ((f64::from(dbfs) + 120.0) / 120.0).clamp(0.0, 1.0)
+}
+
+/// The GPIO pin-state panel.
+fn render_debug_gpio(frame: &mut Frame, area: Rect, theme: &Theme, controller: &DebugController) {
+    let mut lines = Vec::new();
+    match controller.gpio() {
+        Some(gpio) if !gpio.pins.is_empty() => {
+            for pin in &gpio.pins {
+                lines.push(gpio_pin_line(theme, pin));
+            }
+        }
+        Some(_) => lines.push(note_line(theme, "No GPIO pins reported.".to_owned())),
+        None => lines.push(note_line(theme, "No GPIO snapshot.".to_owned())),
+    }
+    let paragraph = Paragraph::new(lines)
+        .block(section_block(theme, " GPIO ".to_owned()))
+        .wrap(Wrap { trim: true });
+    frame.render_widget(paragraph, area);
+}
+
+/// One GPIO pin row: role, current level, and last telemetry id.
+fn gpio_pin_line(theme: &Theme, pin: &GpioPinSnapshot) -> Line<'static> {
+    let (text, color) = if pin.level {
+        ("HIGH", theme.ok)
+    } else {
+        ("LOW ", theme.dim)
+    };
+    Line::from(vec![
+        Span::styled(
+            format!("{:<13} ", truncate(&pin.role, 13)),
+            Style::new().fg(theme.dim),
+        ),
+        Span::styled(text, Style::new().fg(color)),
+        Span::styled(
+            format!("  #{}", pin.last_event_id),
+            Style::new().fg(theme.dim),
+        ),
+    ])
+}
+
+/// The live-logs panel (newest first), filtered by the current level.
+fn render_debug_logs(frame: &mut Frame, area: Rect, theme: &Theme, controller: &DebugController) {
+    let logs = controller.logs();
+    let lines: Vec<Line<'static>> = if logs.is_empty() {
+        vec![note_line(theme, "No log lines.".to_owned())]
+    } else {
+        logs.iter()
+            .rev()
+            .map(|entry| log_line(theme, entry))
+            .collect()
+    };
+    let title = format!(" Logs · {} ", controller.log_level());
+    let paragraph = Paragraph::new(lines)
+        .block(section_block(theme, title))
+        .wrap(Wrap { trim: true });
+    frame.render_widget(paragraph, area);
+}
+
+/// One log row: time, level (colored), and message.
+fn log_line(theme: &Theme, entry: &LogEntry) -> Line<'static> {
+    Line::from(vec![
+        Span::styled(
+            format!("{} ", short_ts_str(&entry.ts)),
+            Style::new().fg(theme.dim),
+        ),
+        Span::styled(
+            format!("{:<5} ", entry.level.to_uppercase()),
+            Style::new().fg(log_level_color(theme, &entry.level)),
+        ),
+        Span::raw(truncate(&entry.message, 80)),
+    ])
+}
+
+/// Accent color for a tracing level.
+fn log_level_color(theme: &Theme, level: &str) -> Color {
+    match level {
+        "error" => theme.error,
+        "warn" => theme.warn,
+        "debug" | "trace" => theme.dim,
+        _ => theme.ok,
+    }
+}
+
+/// Extract the `HH:MM:SS` time portion from an RFC3339 timestamp string.
+fn short_ts_str(ts: &str) -> String {
+    if ts.len() >= 19 && ts.is_char_boundary(11) && ts.is_char_boundary(19) {
+        ts[11..19].to_owned()
+    } else {
+        ts.to_owned()
+    }
+}
+
+/// The redacted-config panel plus the pinned certificate fingerprint footer.
+fn render_debug_config(frame: &mut Frame, area: Rect, theme: &Theme, controller: &DebugController) {
+    let mut lines = Vec::new();
+    if let Some(config) = controller.config() {
+        let debug = &config.debug;
+        let (controls_text, controls_color) = if debug.allow_controls {
+            ("allowed", theme.warn)
+        } else {
+            ("blocked", theme.dim)
+        };
+        lines.push(Line::from(vec![
+            Span::styled("Mode: ", Style::new().fg(theme.dim)),
+            Span::raw(mode_label(debug.runtime_mode)),
+            Span::styled("   Controls: ", Style::new().fg(theme.dim)),
+            Span::styled(controls_text, Style::new().fg(controls_color)),
+        ]));
+        lines.push(Line::from(vec![
+            Span::styled("Listeners: ", Style::new().fg(theme.dim)),
+            Span::raw(format!(
+                "tailscale {} · lan {} · ring {}",
+                bool_label(debug.tailscale_enabled),
+                bool_label(debug.lan_enabled),
+                debug.ring_buffer_capacity,
+            )),
+        ]));
+        if let Some(base) = &config.operator.base_url {
+            lines.push(kv_line(theme, "Operator: ", base.clone()));
+        }
+        lines.push(kv_line(theme, "Op token: ", config.operator.token.clone()));
+    } else {
+        lines.push(note_line(theme, "No config reported.".to_owned()));
+    }
+    let fingerprint = controller
+        .pinned_sha256()
+        .map_or_else(|| "not pinned".to_owned(), str::to_owned);
+    lines.push(kv_line(theme, "Cert fp:  ", fingerprint));
+    let paragraph = Paragraph::new(lines)
+        .block(section_block(theme, " Config ".to_owned()))
+        .wrap(Wrap { trim: true });
+    frame.render_widget(paragraph, area);
+}
+
+/// Render `on`/`off` for a boolean flag.
+fn bool_label(value: bool) -> &'static str {
+    if value { "on" } else { "off" }
+}
+
+/// The Debug footer: log level, freshness, key hints, controls, and any error.
+fn render_debug_status(frame: &mut Frame, area: Rect, theme: &Theme, controller: &DebugController) {
+    let mut spans = vec![Span::styled(
+        format!("level {}", controller.log_level()),
+        Style::new().fg(theme.dim),
+    )];
+    if let Some(last) = controller.last_ok() {
+        spans.push(Span::styled(
+            format!(" · polled {}", ago(last)),
+            Style::new().fg(theme.dim),
+        ));
+    }
+    if controller.is_refreshing() {
+        spans.push(Span::styled(" · refreshing…", Style::new().fg(theme.warn)));
+    } else {
+        spans.push(Span::styled(
+            " · auto every 2s · r refresh · v level",
+            Style::new().fg(theme.dim),
+        ));
+    }
+    if controller.controls_allowed() {
+        spans.push(Span::styled(
+            " · controls allowed",
+            Style::new().fg(theme.warn),
+        ));
+    }
+    if let Some((error, _)) = controller.last_error() {
+        spans.push(Span::styled(
+            format!(" · last error: {error}"),
+            Style::new().fg(theme.error),
+        ));
+    }
+    frame.render_widget(Paragraph::new(Line::from(spans)), area);
+}
+
 /// A bordered section block titled `title`.
 fn section_block(theme: &Theme, title: String) -> Block<'static> {
     Block::bordered()
@@ -2268,20 +2622,6 @@ fn header(theme: &Theme, title: &'static str) -> Line<'static> {
         title,
         Style::new().fg(theme.accent).add_modifier(Modifier::BOLD),
     ))
-}
-
-/// A placeholder body for screens that are not yet implemented.
-fn placeholder_lines(screen: Screen, theme: &Theme) -> Vec<Line<'static>> {
-    vec![
-        header(theme, screen.title()),
-        Line::raw(""),
-        Line::raw(screen.description()),
-        Line::raw(""),
-        Line::from(Span::styled(
-            "Coming soon.",
-            Style::new().fg(theme.dim).add_modifier(Modifier::ITALIC),
-        )),
-    ]
 }
 
 /// The Settings body: configuration summary and account/auth section.
