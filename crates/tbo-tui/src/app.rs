@@ -375,6 +375,16 @@ impl App {
                         .info(format!("Log level: {}", debug.log_level()));
                 }
             }
+            KeyCode::Char('f' | 'F') if self.screen == Screen::Debug => {
+                if let Some(debug) = self.debug.as_mut() {
+                    debug.toggle_live();
+                    if debug.is_live() {
+                        self.toasts.info("Live telemetry on.");
+                    } else {
+                        self.toasts.info("Live telemetry off.");
+                    }
+                }
+            }
             KeyCode::Char('l' | 'L') if self.screen == Screen::Settings => self.begin_login(),
             KeyCode::Char('o' | 'O') if self.screen == Screen::Settings => {
                 self.auth.sign_out(&mut self.toasts);

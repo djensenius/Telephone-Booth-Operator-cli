@@ -2466,19 +2466,30 @@ fn render_debug_status(frame: &mut Frame, area: Rect, theme: &Theme, controller:
         format!("level {}", controller.log_level()),
         Style::new().fg(theme.dim),
     )];
-    if let Some(last) = controller.last_ok() {
+    if controller.is_live() {
         spans.push(Span::styled(
-            format!(" · polled {}", ago(last)),
+            " · ● LIVE",
+            Style::new().fg(theme.ok).add_modifier(Modifier::BOLD),
+        ));
+        spans.push(Span::styled(
+            " · f stop · v level",
             Style::new().fg(theme.dim),
         ));
-    }
-    if controller.is_refreshing() {
-        spans.push(Span::styled(" · refreshing…", Style::new().fg(theme.warn)));
     } else {
-        spans.push(Span::styled(
-            " · auto every 2s · r refresh · v level",
-            Style::new().fg(theme.dim),
-        ));
+        if let Some(last) = controller.last_ok() {
+            spans.push(Span::styled(
+                format!(" · polled {}", ago(last)),
+                Style::new().fg(theme.dim),
+            ));
+        }
+        if controller.is_refreshing() {
+            spans.push(Span::styled(" · refreshing…", Style::new().fg(theme.warn)));
+        } else {
+            spans.push(Span::styled(
+                " · auto every 2s · r refresh · f live · v level",
+                Style::new().fg(theme.dim),
+            ));
+        }
     }
     if controller.controls_allowed() {
         spans.push(Span::styled(
@@ -2489,6 +2500,12 @@ fn render_debug_status(frame: &mut Frame, area: Rect, theme: &Theme, controller:
     if let Some((error, _)) = controller.last_error() {
         spans.push(Span::styled(
             format!(" · last error: {error}"),
+            Style::new().fg(theme.error),
+        ));
+    }
+    if let Some((error, _)) = controller.live_error() {
+        spans.push(Span::styled(
+            format!(" · live: {error}"),
             Style::new().fg(theme.error),
         ));
     }

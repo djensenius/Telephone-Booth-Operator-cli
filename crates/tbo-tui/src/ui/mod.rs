@@ -103,7 +103,7 @@ fn status_hints(app: &App) -> &'static str {
         Screen::SystemHealth => {
             "  r refresh | Tab/Right next | Shift-Tab/Left prev | 1-9 jump | q quit"
         }
-        Screen::Debug => "  r refresh | v level | Tab/Right next | 1-9 jump | q quit",
+        Screen::Debug => "  r refresh | f live | v level | Tab/Right next | q quit",
         Screen::Tokens => {
             "  ↑/↓ select | n new | d revoke | u usage | r reload | Esc dismiss secret | q quit"
         }
