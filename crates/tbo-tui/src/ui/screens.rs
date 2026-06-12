@@ -7,8 +7,11 @@
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
+use ratatui::symbols::Marker;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, List, ListItem, ListState, Paragraph, Wrap};
+use ratatui::widgets::{
+    Axis, Block, Chart, Dataset, Gauge, GraphType, List, ListItem, ListState, Paragraph, Wrap,
+};
 use serde_json::Value;
 use std::time::Instant;
 use time::OffsetDateTime;
@@ -20,10 +23,11 @@ use tbo_core::domain::{
     CallSessionDetail, Message, MessageStatus, Moderation, ModerationRecommendation, Question,
     QuestionStatus, RuntimeMode, StatsOverview, StatsWindow, Transcription, TranscriptionStatus,
 };
+use tbo_metrics::{BoothMetrics, MetricsHistory};
 
 use crate::app::App;
 use crate::auth::AuthPhase;
-use crate::data::Remote;
+use crate::data::{Remote, SystemHealthController};
 use crate::ui::theme::Theme;
 
 /// The set of top-level screens, in tab order.
@@ -199,10 +203,11 @@ pub fn render(app: &App, frame: &mut Frame, area: Rect) {
             );
         }
         Screen::Status => render_paragraph(frame, area, theme, "Status", status_lines(app, theme)),
+        Screen::SystemHealth => render_system_health(app, frame, area),
         Screen::Settings => {
             render_paragraph(frame, area, theme, "Settings", settings_lines(app, theme));
         }
-        screen => {
+        screen @ Screen::Debug => {
             render_paragraph(
                 frame,
                 area,
@@ -1807,6 +1812,376 @@ fn push_host_lines(lines: &mut Vec<Line<'static>>, theme: &Theme, snapshot: &Boo
 /// Format a CPU load average, or `—` when absent.
 fn optional_load(load: Option<f64>) -> String {
     load.map_or_else(|| "—".to_owned(), |value| format!("{value:.2}"))
+}
+
+/// Render the btm-style System Health dashboard for the configured booth.
+///
+/// Falls back to a guidance paragraph when no booth is configured, and to a
+/// status paragraph while the first scrape is pending or has only failed.
+fn render_system_health(app: &App, frame: &mut Frame, area: Rect) {
+    let theme = app.theme();
+    let Some(controller) = app.system_health() else {
+        render_paragraph(
+            frame,
+            area,
+            theme,
+            "System Health",
+            system_health_unconfigured_lines(theme),
+        );
+        return;
+    };
+    if controller.samples() == 0 {
+        render_paragraph(
+            frame,
+            area,
+            theme,
+            &format!("System Health — {}", controller.label()),
+            system_health_pending_lines(theme, controller),
+        );
+        return;
+    }
+
+    let block = section_block(theme, format!(" System Health — {} ", controller.label()));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let rows = Layout::vertical([
+        Constraint::Min(8),
+        Constraint::Min(7),
+        Constraint::Min(4),
+        Constraint::Length(1),
+    ])
+    .split(inner);
+    render_cpu_section(frame, rows[0], theme, controller);
+    render_network_section(frame, rows[1], theme, controller.history());
+    render_disk_section(frame, rows[2], theme, controller.history());
+    render_health_status(frame, rows[3], theme, controller);
+}
+
+/// Guidance shown on the System Health screen when no booth is configured.
+fn system_health_unconfigured_lines(theme: &Theme) -> Vec<Line<'static>> {
+    vec![
+        header(theme, "System Health"),
+        Line::raw(""),
+        Line::raw("No booth is configured, so there is no /metrics endpoint to scrape."),
+        Line::raw(""),
+        hint_line(
+            theme,
+            "Add a [[booths]] entry (id + debug-base-url, optional debug-token) to config.toml.",
+        ),
+    ]
+}
+
+/// Status shown before the first successful scrape (pending or only failed).
+fn system_health_pending_lines(
+    theme: &Theme,
+    controller: &SystemHealthController,
+) -> Vec<Line<'static>> {
+    let mut lines = vec![header(theme, "System Health"), Line::raw("")];
+    if let Some((error, at)) = controller.last_error() {
+        lines.push(Line::from(Span::styled(
+            format!("Failed to scrape booth /metrics: {error}"),
+            Style::new().fg(theme.error),
+        )));
+        lines.push(note_line(theme, format!("Last attempt {}.", ago(*at))));
+        lines.push(hint_line(
+            theme,
+            "Press r to retry. Check the booth URL/token and Tailscale reachability.",
+        ));
+    } else {
+        lines.push(note_line(
+            theme,
+            format!("Scraping {} for /metrics…", controller.label()),
+        ));
+    }
+    lines
+}
+
+/// Top dashboard row: the CPU history chart beside a memory + vitals panel.
+fn render_cpu_section(
+    frame: &mut Frame,
+    area: Rect,
+    theme: &Theme,
+    controller: &SystemHealthController,
+) {
+    let columns =
+        Layout::horizontal([Constraint::Percentage(62), Constraint::Percentage(38)]).split(area);
+    render_cpu_chart(frame, columns[0], theme, controller.history());
+    render_vitals_panel(frame, columns[1], theme, controller.history());
+}
+
+/// The CPU-usage line chart (0–100%).
+fn render_cpu_chart(frame: &mut Frame, area: Rect, theme: &Theme, history: &MetricsHistory) {
+    let values = history.cpu_usage().to_vec();
+    let points = series_points(&values, 100.0);
+    let current = values.last().copied().unwrap_or(0.0);
+    let x_max = axis_max(points.len());
+    let datasets = vec![
+        Dataset::default()
+            .marker(Marker::Braille)
+            .graph_type(GraphType::Line)
+            .style(Style::new().fg(theme.accent))
+            .data(&points),
+    ];
+    let chart = Chart::new(datasets)
+        .block(section_block(
+            theme,
+            format!(" CPU  {} ", format_ratio(current)),
+        ))
+        .x_axis(
+            Axis::default()
+                .style(Style::new().fg(theme.dim))
+                .bounds([0.0, x_max]),
+        )
+        .y_axis(
+            Axis::default()
+                .style(Style::new().fg(theme.dim))
+                .bounds([0.0, 100.0])
+                .labels([Line::from("0"), Line::from("50"), Line::from("100")]),
+        );
+    frame.render_widget(chart, area);
+}
+
+/// The right-hand panel of the top row: a memory gauge over a vitals readout.
+fn render_vitals_panel(frame: &mut Frame, area: Rect, theme: &Theme, history: &MetricsHistory) {
+    let rows = Layout::vertical([Constraint::Length(3), Constraint::Min(0)]).split(area);
+    render_memory_gauge(frame, rows[0], theme, history);
+    render_vitals_text(frame, rows[1], theme, history);
+}
+
+/// The memory-usage gauge.
+fn render_memory_gauge(frame: &mut Frame, area: Rect, theme: &Theme, history: &MetricsHistory) {
+    let latest = history.latest();
+    let ratio = latest
+        .and_then(BoothMetrics::memory_used_ratio)
+        .unwrap_or(0.0)
+        .clamp(0.0, 1.0);
+    let label = match (
+        latest.and_then(|m| m.memory_used_bytes),
+        latest.and_then(|m| m.memory_total_bytes),
+    ) {
+        (Some(used), Some(total)) => format!(
+            "{} / {} ({})",
+            format_bytes_f64(used),
+            format_bytes_f64(total),
+            format_ratio(ratio),
+        ),
+        _ => "—".to_owned(),
+    };
+    let gauge = Gauge::default()
+        .block(section_block(theme, " Memory ".to_owned()))
+        .gauge_style(Style::new().fg(theme.accent))
+        .ratio(ratio)
+        .label(label);
+    frame.render_widget(gauge, area);
+}
+
+/// Temperature, load average, and uptime read-outs.
+fn render_vitals_text(frame: &mut Frame, area: Rect, theme: &Theme, history: &MetricsHistory) {
+    let mut lines = Vec::new();
+    if let Some(metrics) = history.latest() {
+        if let Some(temp) = metrics.cpu_temperature_celsius {
+            lines.push(kv_line(theme, "Temp:   ", format!("{temp:.1} °C")));
+        }
+        lines.push(kv_line(
+            theme,
+            "Load:   ",
+            format!(
+                "{} / {} / {}",
+                optional_load(metrics.load_average_1m),
+                optional_load(metrics.load_average_5m),
+                optional_load(metrics.load_average_15m),
+            ),
+        ));
+        if let Some(uptime) = metrics.uptime_seconds {
+            lines.push(kv_line(theme, "Uptime: ", format_uptime(uptime)));
+        }
+    }
+    let paragraph = Paragraph::new(lines)
+        .block(section_block(theme, " Vitals ".to_owned()))
+        .wrap(Wrap { trim: true });
+    frame.render_widget(paragraph, area);
+}
+
+/// The network throughput chart (receive and transmit rates, bytes/sec).
+fn render_network_section(frame: &mut Frame, area: Rect, theme: &Theme, history: &MetricsHistory) {
+    let rx = history.net_receive_rate().to_vec();
+    let tx = history.net_transmit_rate().to_vec();
+    if rx.is_empty() && tx.is_empty() {
+        let paragraph = Paragraph::new(vec![note_line(
+            theme,
+            "Measuring network throughput…".to_owned(),
+        )])
+        .block(section_block(theme, " Network ".to_owned()));
+        frame.render_widget(paragraph, area);
+        return;
+    }
+
+    let rx_points = series_points(&rx, 1.0);
+    let tx_points = series_points(&tx, 1.0);
+    let current_rx = rx.last().copied().unwrap_or(0.0);
+    let current_tx = tx.last().copied().unwrap_or(0.0);
+    // Floor the y-axis at 1 KiB/s so a quiet link still renders a flat baseline
+    // rather than a degenerate zero-height chart.
+    let y_max = rx
+        .iter()
+        .chain(tx.iter())
+        .copied()
+        .fold(0.0_f64, f64::max)
+        .max(1024.0);
+    let x_max = axis_max(rx_points.len().max(tx_points.len()));
+    let datasets = vec![
+        Dataset::default()
+            .name("rx")
+            .marker(Marker::Braille)
+            .graph_type(GraphType::Line)
+            .style(Style::new().fg(theme.ok))
+            .data(&rx_points),
+        Dataset::default()
+            .name("tx")
+            .marker(Marker::Braille)
+            .graph_type(GraphType::Line)
+            .style(Style::new().fg(theme.warn))
+            .data(&tx_points),
+    ];
+    let title = format!(
+        " Network  ↓ {}/s  ↑ {}/s ",
+        format_bytes_f64(current_rx),
+        format_bytes_f64(current_tx),
+    );
+    let chart = Chart::new(datasets)
+        .block(section_block(theme, title))
+        .x_axis(
+            Axis::default()
+                .style(Style::new().fg(theme.dim))
+                .bounds([0.0, x_max]),
+        )
+        .y_axis(
+            Axis::default()
+                .style(Style::new().fg(theme.dim))
+                .bounds([0.0, y_max])
+                .labels([
+                    Line::from("0"),
+                    Line::from(format!("{}/s", format_bytes_f64(y_max))),
+                ]),
+        );
+    frame.render_widget(chart, area);
+}
+
+/// Per-mountpoint disk-usage rows.
+fn render_disk_section(frame: &mut Frame, area: Rect, theme: &Theme, history: &MetricsHistory) {
+    let mut lines = Vec::new();
+    if let Some(metrics) = history.latest() {
+        if metrics.disks.is_empty() {
+            lines.push(note_line(theme, "No disk metrics reported.".to_owned()));
+        } else {
+            for disk in &metrics.disks {
+                lines.push(disk_line(theme, disk));
+            }
+        }
+    }
+    let paragraph = Paragraph::new(lines)
+        .block(section_block(theme, " Disks ".to_owned()))
+        .wrap(Wrap { trim: true });
+    frame.render_widget(paragraph, area);
+}
+
+/// One disk row: a usage bar with used / total / percentage detail.
+fn disk_line(theme: &Theme, disk: &tbo_metrics::DiskUsage) -> Line<'static> {
+    let ratio = disk.used_ratio().unwrap_or(0.0);
+    let detail = match (disk.used_bytes, disk.total_bytes) {
+        (Some(used), Some(total)) => format!(
+            "{} / {} ({})",
+            format_bytes_f64(used),
+            format_bytes_f64(total),
+            format_ratio(ratio),
+        ),
+        _ => "—".to_owned(),
+    };
+    Line::from(vec![
+        Span::styled(
+            format!("{:<10} ", truncate(&disk.mountpoint, 10)),
+            Style::new().fg(theme.dim),
+        ),
+        Span::raw(format!("{} {detail}", percent_bar(ratio))),
+    ])
+}
+
+/// The dashboard footer: sample count, freshness, refresh hint, and any error.
+fn render_health_status(
+    frame: &mut Frame,
+    area: Rect,
+    theme: &Theme,
+    controller: &SystemHealthController,
+) {
+    let mut spans = vec![Span::styled(
+        format!("{} samples", controller.samples()),
+        Style::new().fg(theme.dim),
+    )];
+    if let Some(last) = controller.last_ok() {
+        spans.push(Span::styled(
+            format!(" · scraped {}", ago(last)),
+            Style::new().fg(theme.dim),
+        ));
+    }
+    if controller.is_refreshing() {
+        spans.push(Span::styled(" · refreshing…", Style::new().fg(theme.warn)));
+    } else {
+        spans.push(Span::styled(
+            " · auto every 2s · r to refresh",
+            Style::new().fg(theme.dim),
+        ));
+    }
+    if let Some((error, _)) = controller.last_error() {
+        spans.push(Span::styled(
+            format!(" · last error: {error}"),
+            Style::new().fg(theme.error),
+        ));
+    }
+    frame.render_widget(Paragraph::new(Line::from(spans)), area);
+}
+
+/// A bordered section block titled `title`.
+fn section_block(theme: &Theme, title: String) -> Block<'static> {
+    Block::bordered()
+        .border_style(Style::new().fg(theme.dim))
+        .title(title)
+}
+
+/// Convert a series of `f64` values into `(index, value * scale)` chart points.
+fn series_points(values: &[f64], scale: f64) -> Vec<(f64, f64)> {
+    values
+        .iter()
+        .enumerate()
+        .map(|(index, &value)| {
+            let x = f64::from(u16::try_from(index).unwrap_or(u16::MAX));
+            (x, value * scale)
+        })
+        .collect()
+}
+
+/// The x-axis upper bound for a series of `len` points (at least `1.0`).
+fn axis_max(len: usize) -> f64 {
+    f64::from(u16::try_from(len.saturating_sub(1)).unwrap_or(u16::MAX)).max(1.0)
+}
+
+/// Human-readable byte size from an `f64` count (e.g. `1.5 GiB`).
+fn format_bytes_f64(bytes: f64) -> String {
+    const UNITS: [&str; 6] = ["B", "KiB", "MiB", "GiB", "TiB", "PiB"];
+    if !bytes.is_finite() || bytes < 0.0 {
+        return "—".to_owned();
+    }
+    let mut value = bytes;
+    let mut unit = 0;
+    while value >= 1024.0 && unit < UNITS.len() - 1 {
+        value /= 1024.0;
+        unit += 1;
+    }
+    if unit == 0 {
+        format!("{value:.0} {}", UNITS[unit])
+    } else {
+        format!("{value:.1} {}", UNITS[unit])
+    }
 }
 
 /// Format a `0.0..=1.0` ratio as a whole percentage.

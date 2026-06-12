@@ -13,7 +13,7 @@ use crate::auth::{AuthController, AuthPhase};
 use crate::data::{
     EventsController, MessagesController, QuestionsController, SessionTokenProvider,
     SessionsController, SharedSession, StatsController, StatusController, SystemController,
-    TokensController,
+    SystemHealthController, TokensController,
 };
 use crate::event::{AppEvent, EventLoop};
 use crate::tui::Tui;
@@ -40,6 +40,7 @@ pub struct App {
     events: EventsController,
     stats: StatsController,
     system: SystemController,
+    system_health: Option<SystemHealthController>,
     tokens: TokensController,
     modal: Option<Modal>,
     should_quit: bool,
@@ -75,6 +76,8 @@ impl App {
         let questions = QuestionsController::new(api.clone());
         let sessions = SessionsController::new(api.clone());
 
+        let system_health = Self::build_system_health(&config, &mut toasts);
+
         Ok(Self {
             config,
             theme,
@@ -88,10 +91,28 @@ impl App {
             events: EventsController::new(api.clone()),
             stats: StatsController::new(api.clone()),
             system: SystemController::new(api.clone()),
+            system_health,
             tokens: TokensController::new(api),
             modal: None,
             should_quit: false,
         })
+    }
+
+    /// Build the System Health controller for the first configured booth, if
+    /// any. A construction failure is surfaced as a warning toast and leaves the
+    /// dashboard disabled rather than failing startup.
+    fn build_system_health(config: &Config, toasts: &mut Toasts) -> Option<SystemHealthController> {
+        let booth = config.booths.first()?;
+        match SystemHealthController::from_config(booth) {
+            Ok(controller) => Some(controller),
+            Err(err) => {
+                toasts.warn(format!(
+                    "System Health unavailable for booth {}: {err}",
+                    booth.id
+                ));
+                None
+            }
+        }
     }
 
     /// Build the shared session manager, preferring the OS keychain and falling
@@ -195,6 +216,13 @@ impl App {
         &self.system
     }
 
+    /// The System Health controller (drives the btm-style dashboard), present
+    /// only when a booth is configured.
+    #[must_use]
+    pub fn system_health(&self) -> Option<&SystemHealthController> {
+        self.system_health.as_ref()
+    }
+
     /// The API-tokens controller (drives the Tokens screen).
     #[must_use]
     pub fn tokens(&self) -> &TokensController {
@@ -224,6 +252,9 @@ impl App {
                     self.events.tick(self.screen == Screen::Events);
                     self.stats.tick(self.screen == Screen::Stats);
                     self.system.tick(self.screen == Screen::LiveSystem);
+                    if let Some(health) = self.system_health.as_mut() {
+                        health.tick(self.screen == Screen::SystemHealth);
+                    }
                     self.tokens.tick(self.screen == Screen::Tokens);
                     self.drain_token_actions();
                     self.toasts.prune();
@@ -543,6 +574,11 @@ impl App {
             Screen::Events => self.events.refresh(),
             Screen::Stats => self.stats.refresh(),
             Screen::LiveSystem => self.system.refresh(),
+            Screen::SystemHealth => {
+                if let Some(health) = self.system_health.as_mut() {
+                    health.refresh();
+                }
+            }
             Screen::Tokens => self.tokens.refresh(),
             _ => {}
         }
