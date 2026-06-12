@@ -1,0 +1,16 @@
+[package]
+name = "tbo-metrics"
+description = "Prometheus text parsing and time-series buffers for tb-operator's system-health dashboard."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]

@@ -1,0 +1,17 @@
+# Rust / Cargo
+/target
+**/*.rs.bk
+*.pdb
+
+# cargo-deb output
+/target/debian
+
+# Environment / local config
+.env
+.env.local
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/
+*.swp

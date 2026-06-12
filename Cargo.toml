@@ -1,0 +1,68 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/tbo-core",
+    "crates/tbo-auth",
+    "crates/tbo-operator-client",
+    "crates/tbo-booth-client",
+    "crates/tbo-metrics",
+    "crates/tbo-tui",
+]
+
+[workspace.package]
+version = "0.1.0" # x-release-please-version
+edition = "2024"
+rust-version = "1.95"
+license = "Apache-2.0"
+authors = ["David Jensenius"]
+repository = "https://github.com/djensenius/Telephone-Booth-Operator-cli"
+homepage = "https://github.com/djensenius/Telephone-Booth-Operator-cli"
+# Workspace crates are internal-only and use `path` deps. `publish = false`
+# makes that intent explicit and lets cargo-deny's `allow-wildcard-paths`
+# apply (it only skips wildcard checks for private/non-publishable crates).
+publish = false
+
+# Release profile shipped in the .deb. We let the Rust linker strip symbols
+# during the build (which knows the target's stripping ABI), so cargo-deb does
+# not need to invoke a host `strip` on a cross-compiled binary. See
+# `publish.yml` which passes `cargo deb --no-strip`.
+[profile.release]
+strip = "symbols"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"
+rust_2024_compatibility = { level = "warn", priority = -1 }
+
+[workspace.lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+nursery = { level = "warn", priority = -1 }
+unwrap_used = "warn"
+expect_used = "warn"
+# These pedantic/nursery lints fight ergonomic code or duplicate intent that is
+# intentionally explicit.
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+module_name_repetitions = "allow"
+must_use_candidate = "allow"
+match_same_arms = "allow"
+too_many_lines = "allow"
+too_long_first_doc_paragraph = "allow"
+doc_markdown = "allow"
+missing_const_for_fn = "allow"
+significant_drop_tightening = "allow"
+redundant_clone = "allow"
+assigning_clones = "allow"
+use_self = "allow"
+derivable_impls = "allow"
+return_self_not_must_use = "allow"
+multiple_crate_versions = "allow"
+struct_excessive_bools = "allow"
+
+[workspace.dependencies]
+# Workspace crates
+tbo-core = { path = "crates/tbo-core" }
+tbo-auth = { path = "crates/tbo-auth" }
+tbo-operator-client = { path = "crates/tbo-operator-client" }
+tbo-booth-client = { path = "crates/tbo-booth-client" }
+tbo-metrics = { path = "crates/tbo-metrics" }

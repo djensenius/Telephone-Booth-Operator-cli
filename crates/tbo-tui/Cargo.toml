@@ -1,0 +1,35 @@
+[package]
+name = "tbo-tui"
+description = "Terminal operator console (TUI) for the Telephone-Booth installation."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+publish = false
+default-run = "tb-operator"
+
+[[bin]]
+name = "tb-operator"
+path = "src/main.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+
+[package.metadata.deb]
+name = "telephone-booth-operator-cli"
+maintainer = "David Jensenius"
+copyright = "2024-2026, David Jensenius"
+license-file = ["../../LICENSE", "0"]
+extended-description = "Terminal UI operator console for the Telephone Booth art installation. Manages messages, questions, sessions, and live system health, and connects to the booth's on-device debug server."
+section = "utils"
+priority = "optional"
+depends = "libasound2"
+assets = [
+    ["target/release/tb-operator", "/usr/bin/tb-operator", "755"],
+    ["../../README.md", "/usr/share/doc/telephone-booth-operator-cli/README.md", "644"],
+]
