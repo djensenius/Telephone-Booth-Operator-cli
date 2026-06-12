@@ -77,8 +77,27 @@ cargo run -p tbo-tui   # runs the `tb-operator` binary
 ```sh
 tb-operator                 # launch the console with the default config
 tb-operator --config FILE   # use an alternate TOML config file
+tb-operator --setup         # re-run the interactive setup flow
 tb-operator --version       # print the version and exit
 ```
+
+### First-run setup
+
+On first launch (when no config file exists yet) `tb-operator` runs an
+interactive **setup flow** in the terminal — you can also re-run it any time
+with `tb-operator --setup`. It:
+
+1. prompts for the operator API URL and, optionally, custom Authentik OIDC
+   settings (the defaults target the production Telephone-Booth tenant);
+2. collects any booth debug-server connections;
+3. signs you in with the device-authorization grant (see
+   [Authentication](#authentication)); and
+4. validates the operator API connection with the new token.
+
+The shareable configuration is written to the config directory, while sensitive
+booth debug tokens are written to a separate owner-only secrets file in the
+platform data directory (see [Configuration](#configuration)). Setup is skipped
+automatically when the input is not an interactive terminal.
 
 ### Navigation and keys
 
@@ -153,8 +172,13 @@ pinned-sha256 = "…"          # optional LAN TLS cert fingerprint (lower-case h
 ```
 
 The Authentik refresh token is **not** stored in this file — it lives in the OS
-keychain. The per-booth `debug-token` is operator-controlled and is kept here,
-mirroring the web Debug screen.
+keychain. The per-booth `debug-token` is sensitive too, so the setup flow keeps
+it out of this file: it is written to a separate, owner-only secrets file in the
+platform **data** directory (e.g.
+`~/.local/share/tb-operator/secrets.toml` on Linux, or
+`~/Library/Application Support/io.telephonebooth.tb-operator/secrets.toml` on
+macOS) and merged back in at startup. An inline `debug-token` in `config.toml`
+is still honoured for backwards compatibility.
 
 ## Installation
 

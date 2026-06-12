@@ -6,10 +6,13 @@
 //! on macOS). [`Config::load`] returns defaults when no file exists, so a
 //! fresh install works out of the box against the production operator API.
 //!
-//! Secrets handling: the per-booth static `debug_token` lives here because it
-//! is operator-controlled (mirroring the web Debug screen). The Authentik
-//! refresh token is **not** stored here — it is kept in the OS keychain by the
-//! `tbo-auth` crate.
+//! Secrets handling: the per-booth static `debug_token` is sensitive and is
+//! kept out of this file by default — the onboarding flow stores it in a
+//! separate secrets file under the platform data directory (see
+//! [`crate::secrets`]) and merges it back in at startup via
+//! [`Config::merge_secrets`]. An inline `debug-token` is still honoured for
+//! backwards compatibility. The Authentik refresh token is never stored here —
+//! it is kept in the OS keychain by the `tbo-auth` crate.
 
 use std::path::{Path, PathBuf};
 

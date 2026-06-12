@@ -11,4 +11,9 @@ pub struct Cli {
     /// Use an alternate configuration file instead of the default location.
     #[arg(long, value_name = "FILE")]
     pub config: Option<PathBuf>,
+
+    /// Run the interactive setup flow before launching, even if a configuration
+    /// already exists.
+    #[arg(long)]
+    pub setup: bool,
 }

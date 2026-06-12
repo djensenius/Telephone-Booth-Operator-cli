@@ -6,6 +6,7 @@
 //!
 //! - [`cli`]: command-line argument parsing.
 //! - [`logging`]: file-based tracing setup.
+//! - [`onboarding`]: interactive first-run setup.
 //! - [`tui`]: terminal init/restore and the panic hook.
 //! - [`event`]: the async input/tick event source.
 //! - [`auth`]: interactive Authentik device-code login.
@@ -19,11 +20,15 @@ mod cli;
 mod data;
 mod event;
 mod logging;
+mod onboarding;
 mod tui;
 mod ui;
 
+use std::io::IsTerminal;
+
 use anyhow::Result;
 use clap::Parser;
+use tbo_core::Secrets;
 use tbo_core::config::Config;
 
 use crate::app::App;
@@ -36,7 +41,17 @@ async fn main() -> Result<()> {
         Some(path) => path.to_path_buf(),
         None => Config::default_path()?,
     };
-    let config = Config::load_from(&config_path)?;
+
+    // Run the interactive setup when explicitly requested, or on first launch
+    // (no config yet) when attached to a terminal that can answer prompts.
+    let first_run = !config_path.exists();
+    if cli.setup || (first_run && std::io::stdin().is_terminal() && std::io::stdout().is_terminal())
+    {
+        onboarding::run(&config_path).await?;
+    }
+
+    let mut config = Config::load_from(&config_path)?;
+    config.merge_secrets(&Secrets::load().unwrap_or_default());
 
     let _log_guard = logging::init();
 

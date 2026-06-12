@@ -16,5 +16,7 @@
 pub mod config;
 pub mod domain;
 pub mod error;
+pub mod secrets;
 
 pub use error::{Error, Result};
+pub use secrets::Secrets;
