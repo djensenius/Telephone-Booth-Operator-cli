@@ -17,6 +17,18 @@ pub enum QuestionStatus {
     Archived,
 }
 
+impl QuestionStatus {
+    /// The query-string value the API expects (`draft`, `active`, `archived`).
+    #[must_use]
+    pub const fn as_query(self) -> &'static str {
+        match self {
+            Self::Draft => "draft",
+            Self::Active => "active",
+            Self::Archived => "archived",
+        }
+    }
+}
+
 /// A question prompt with its recorded audio.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -45,4 +57,15 @@ pub struct QuestionCreate {
     /// Initial status; defaults server-side when omitted.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub status: Option<QuestionStatus>,
+}
+
+/// A page of questions (`GET /v1/questions`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QuestionList {
+    /// Questions on this page, newest first.
+    pub items: Vec<Question>,
+    /// Opaque cursor for the next page, or `None` at the end.
+    #[serde(default)]
+    pub next_cursor: Option<String>,
 }

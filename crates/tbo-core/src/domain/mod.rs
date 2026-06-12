@@ -22,16 +22,17 @@ pub mod upload;
 pub mod ws;
 
 pub use ai::{
-    AiProvider, Moderation, ModerationRecommendation, Transcription, TranscriptionStatus,
+    AiProvider, Moderation, ModerationRecommendation, Transcription, TranscriptionList,
+    TranscriptionStatus,
 };
-pub use booth::{BoothState, BoothStatus, RuntimeMode, StatusUpdate};
+pub use booth::{BoothState, BoothStatus, RuntimeMode, StatusHistory, StatusUpdate};
 pub use common::AudioRef;
 pub use event::{BoothEvent, BoothEventList, BoothEventRecord, BoothEventType};
 pub use message::{
-    Message, MessageDecision, MessageDecisionKind, MessageStatus, TranslationSubmit,
+    Message, MessageDecision, MessageDecisionKind, MessageList, MessageStatus, TranslationSubmit,
 };
 pub use operator::OperatorMe;
-pub use question::{Question, QuestionCreate, QuestionStatus};
+pub use question::{Question, QuestionCreate, QuestionList, QuestionStatus};
 pub use session::{CallOutcome, CallSession, CallSessionDetail, CallSessionList};
 pub use stats::{
     StatsBoothBreakdown, StatsBusiest, StatsCallsPerDay, StatsHourlyBucket, StatsOverview,

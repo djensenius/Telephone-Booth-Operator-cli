@@ -1602,6 +1602,15 @@ version = "0.1.0"
 [[package]]
 name = "tbo-operator-client"
 version = "0.1.0"
+dependencies = [
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tbo-core",
+ "thiserror 2.0.18",
+ "time",
+ "tokio",
+]
 
 [[package]]
 name = "tbo-tui"

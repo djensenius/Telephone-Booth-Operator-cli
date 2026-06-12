@@ -22,6 +22,20 @@ pub enum MessageStatus {
     Rejected,
 }
 
+impl MessageStatus {
+    /// The query-string value the API expects.
+    #[must_use]
+    pub const fn as_query(self) -> &'static str {
+        match self {
+            Self::Uploading => "uploading",
+            Self::Received => "received",
+            Self::Pending => "pending",
+            Self::Approved => "approved",
+            Self::Rejected => "rejected",
+        }
+    }
+}
+
 /// A caller-recorded message with its latest AI artifacts.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -56,6 +70,14 @@ pub struct Message {
     /// Most recent moderation, when present.
     #[serde(default)]
     pub latest_moderation: Option<Moderation>,
+}
+
+/// A page of messages (`GET /v1/messages`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MessageList {
+    /// Messages on this page, newest first.
+    pub items: Vec<Message>,
 }
 
 /// The two operator decisions a message can receive.
