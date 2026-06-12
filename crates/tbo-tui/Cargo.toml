@@ -24,6 +24,7 @@ tbo-auth = { workspace = true }
 tbo-operator-client = { workspace = true }
 tbo-booth-client = { workspace = true }
 tbo-metrics = { workspace = true }
+tbo-audio = { workspace = true }
 serde_json = { workspace = true }
 ratatui = { workspace = true }
 crossterm = { workspace = true }

@@ -387,6 +387,10 @@ mod tests {
         ) -> Result<HttpResponse> {
             Ok(self.write_response.lock().unwrap().clone())
         }
+
+        async fn get_bytes(&self, _url: &str) -> Result<Vec<u8>> {
+            Ok(Vec::new())
+        }
     }
 
     fn controller(

@@ -2210,6 +2210,7 @@ dependencies = [
  "futures",
  "ratatui",
  "serde_json",
+ "tbo-audio",
  "tbo-auth",
  "tbo-booth-client",
  "tbo-core",

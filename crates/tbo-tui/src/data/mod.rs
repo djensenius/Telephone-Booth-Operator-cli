@@ -12,6 +12,7 @@
 mod debug;
 mod events;
 mod messages;
+mod playback;
 mod questions;
 mod sessions;
 mod stats;
@@ -31,6 +32,7 @@ use tbo_operator_client::{OperatorClient, OperatorError, ReqwestTransport, Resul
 pub use debug::DebugController;
 pub use events::EventsController;
 pub use messages::MessagesController;
+pub use playback::PlaybackController;
 pub use questions::QuestionsController;
 pub use sessions::SessionsController;
 pub use stats::StatsController;
