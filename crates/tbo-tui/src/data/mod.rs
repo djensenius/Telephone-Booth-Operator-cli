@@ -7,6 +7,7 @@
 //! task performs the request and the UI thread applies the result on each tick
 //! via `drain`, so rendering never blocks on the network.
 
+mod messages;
 mod status;
 
 use std::sync::Arc;
@@ -17,6 +18,7 @@ use time::OffsetDateTime;
 use tbo_auth::{ReqwestTransport as AuthTransport, SessionManager, TokenStore};
 use tbo_operator_client::{OperatorClient, OperatorError, ReqwestTransport, Result, TokenProvider};
 
+pub use messages::MessagesController;
 pub use status::StatusController;
 
 /// The session manager shared between the auth controller and the data layer.

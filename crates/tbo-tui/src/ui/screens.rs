@@ -5,15 +5,18 @@
 //! the navigation chrome can be exercised end to end.
 
 use ratatui::Frame;
-use ratatui::layout::Rect;
+use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Paragraph, Wrap};
+use ratatui::widgets::{Block, List, ListItem, ListState, Paragraph, Wrap};
 use std::time::Instant;
 use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
 
-use tbo_core::domain::{BoothState, BoothStatus, RuntimeMode};
+use tbo_core::domain::{
+    BoothState, BoothStatus, Message, MessageStatus, Moderation, ModerationRecommendation,
+    RuntimeMode, Transcription, TranscriptionStatus,
+};
 
 use crate::app::App;
 use crate::auth::AuthPhase;
@@ -171,19 +174,329 @@ impl Screen {
 /// Render the body for the active screen.
 pub fn render(app: &App, frame: &mut Frame, area: Rect) {
     let theme = app.theme();
-    let screen = app.screen();
+    match app.screen() {
+        Screen::Messages => render_messages(app, frame, area),
+        Screen::Status => render_paragraph(frame, area, theme, "Status", status_lines(app, theme)),
+        Screen::Settings => {
+            render_paragraph(frame, area, theme, "Settings", settings_lines(app, theme));
+        }
+        screen => {
+            render_paragraph(
+                frame,
+                area,
+                theme,
+                screen.title(),
+                placeholder_lines(screen, theme),
+            );
+        }
+    }
+}
 
-    let lines = match screen {
-        Screen::Status => status_lines(app, theme),
-        Screen::Settings => settings_lines(app, theme),
-        _ => placeholder_lines(screen, theme),
-    };
-
+/// Render `lines` as a bordered, word-wrapped paragraph filling `area`.
+fn render_paragraph(
+    frame: &mut Frame,
+    area: Rect,
+    theme: &Theme,
+    title: &str,
+    lines: Vec<Line<'static>>,
+) {
     let block = Block::bordered()
         .border_style(Style::new().fg(theme.dim))
-        .title(format!(" {} ", screen.title()));
+        .title(format!(" {title} "));
     let paragraph = Paragraph::new(lines).block(block).wrap(Wrap { trim: true });
     frame.render_widget(paragraph, area);
+}
+
+/// Render the Messages screen: a master list beside a detail pane.
+fn render_messages(app: &App, frame: &mut Frame, area: Rect) {
+    let theme = app.theme();
+    let controller = app.messages();
+    match controller.state() {
+        Remote::Ready { value, fetched_at } if !value.is_empty() => {
+            let columns =
+                Layout::horizontal([Constraint::Percentage(42), Constraint::Min(24)]).split(area);
+            render_message_list(frame, columns[0], theme, value, controller.selected_index());
+
+            let mut detail = message_detail_lines(theme, controller.selected_message());
+            detail.push(Line::raw(""));
+            if controller.is_refreshing() {
+                detail.push(note_line(theme, "Refreshing…".to_owned()));
+            } else {
+                detail.push(note_line(theme, format!("Fetched {}.", ago(*fetched_at))));
+            }
+            render_paragraph(frame, columns[1], theme, "Detail", detail);
+        }
+        other => render_paragraph(
+            frame,
+            area,
+            theme,
+            "Messages",
+            messages_status_lines(theme, other),
+        ),
+    }
+}
+
+/// Body lines for the non-list Messages states (loading, empty, or failed).
+fn messages_status_lines(theme: &Theme, state: &Remote<Vec<Message>>) -> Vec<Line<'static>> {
+    let mut lines = vec![header(theme, Screen::Messages.title()), Line::raw("")];
+    match state {
+        Remote::Idle | Remote::Loading => lines.push(hint_line(theme, "Loading messages…")),
+        Remote::Ready { .. } => {
+            lines.push(note_line(theme, "No messages.".to_owned()));
+            lines.push(hint_line(theme, "Press r to reload."));
+        }
+        Remote::Failed { error, at } => {
+            lines.push(Line::from(Span::styled(
+                format!("Failed to load messages {}.", ago(*at)),
+                Style::new().fg(theme.error),
+            )));
+            lines.push(Line::from(vec![
+                Span::styled("Reason: ", Style::new().fg(theme.dim)),
+                Span::raw(error.clone()),
+            ]));
+            lines.push(hint_line(
+                theme,
+                "Press r to retry; sign in via Settings if unauthorized.",
+            ));
+        }
+    }
+    lines
+}
+
+/// Render the scrollable list of messages with the selected row highlighted.
+fn render_message_list(
+    frame: &mut Frame,
+    area: Rect,
+    theme: &Theme,
+    messages: &[Message],
+    selected: usize,
+) {
+    let items: Vec<ListItem> = messages
+        .iter()
+        .map(|message| {
+            ListItem::new(Line::from(vec![
+                status_badge(theme, message.status),
+                Span::raw(" "),
+                Span::styled(short_time(message.created_at), Style::new().fg(theme.dim)),
+                Span::raw("  "),
+                Span::raw(transcription_snippet(message)),
+            ]))
+        })
+        .collect();
+    let list = List::new(items)
+        .block(
+            Block::bordered()
+                .border_style(Style::new().fg(theme.dim))
+                .title(" Messages "),
+        )
+        .highlight_style(
+            Style::new()
+                .fg(theme.accent)
+                .add_modifier(Modifier::REVERSED | Modifier::BOLD),
+        )
+        .highlight_symbol("> ");
+    let mut list_state = ListState::default();
+    list_state.select(Some(selected));
+    frame.render_stateful_widget(list, area, &mut list_state);
+}
+
+/// Build the detail-pane lines for the selected message.
+fn message_detail_lines(theme: &Theme, message: Option<&Message>) -> Vec<Line<'static>> {
+    let Some(message) = message else {
+        return vec![
+            header(theme, "Message"),
+            Line::raw(""),
+            hint_line(theme, "Select a message."),
+        ];
+    };
+
+    let mut lines = vec![
+        header(theme, "Message"),
+        Line::raw(""),
+        kv_line(theme, "ID:        ", message.id.clone()),
+        Line::from(vec![
+            Span::styled("Status:    ", Style::new().fg(theme.dim)),
+            status_badge(theme, message.status),
+        ]),
+    ];
+    if let Some(question_id) = &message.question_id {
+        lines.push(kv_line(theme, "Question:  ", question_id.clone()));
+    }
+    lines.push(kv_line(theme, "Created:   ", format_ts(message.created_at)));
+    if let Some(received_at) = message.received_at {
+        lines.push(kv_line(theme, "Received:  ", format_ts(received_at)));
+    }
+    if let Some(decided_at) = message.decided_at {
+        lines.push(kv_line(theme, "Decided:   ", format_ts(decided_at)));
+    }
+    if let Some(notes) = &message.notes {
+        lines.push(kv_line(theme, "Notes:     ", notes.clone()));
+    }
+
+    lines.push(Line::raw(""));
+    lines.push(subheader(theme, "Transcription"));
+    push_transcription_lines(&mut lines, theme, message.latest_transcription.as_ref());
+
+    lines.push(Line::raw(""));
+    lines.push(subheader(theme, "Moderation"));
+    push_moderation_lines(&mut lines, theme, message.latest_moderation.as_ref());
+
+    lines
+}
+
+/// Append the transcription detail rows (or a `none` note).
+fn push_transcription_lines(
+    lines: &mut Vec<Line<'static>>,
+    theme: &Theme,
+    transcription: Option<&Transcription>,
+) {
+    let Some(transcription) = transcription else {
+        lines.push(note_line(theme, "  none".to_owned()));
+        return;
+    };
+    lines.push(Line::from(vec![
+        Span::styled("  Status:    ", Style::new().fg(theme.dim)),
+        job_status_badge(theme, transcription.status),
+    ]));
+    if let Some(language) = &transcription.language {
+        lines.push(kv_line(theme, "  Language:  ", language.clone()));
+    }
+    match &transcription.text {
+        Some(text) => lines.push(kv_line(theme, "  Text:      ", text.clone())),
+        None => lines.push(note_line(theme, "  (no text)".to_owned())),
+    }
+    if let Some(translated) = &transcription.translated_text {
+        lines.push(kv_line(theme, "  Translated:", format!(" {translated}")));
+        if let Some(language) = &transcription.translated_language {
+            lines.push(kv_line(theme, "  → Language:", format!(" {language}")));
+        }
+    }
+    if let Some(error) = &transcription.error {
+        lines.push(Line::from(vec![
+            Span::styled("  Error:     ", Style::new().fg(theme.dim)),
+            Span::styled(error.clone(), Style::new().fg(theme.error)),
+        ]));
+    }
+}
+
+/// Append the moderation detail rows (or a `none` note).
+fn push_moderation_lines(
+    lines: &mut Vec<Line<'static>>,
+    theme: &Theme,
+    moderation: Option<&Moderation>,
+) {
+    let Some(moderation) = moderation else {
+        lines.push(note_line(theme, "  none".to_owned()));
+        return;
+    };
+    lines.push(Line::from(vec![
+        Span::styled("  Status:    ", Style::new().fg(theme.dim)),
+        job_status_badge(theme, moderation.status),
+    ]));
+    if let Some(recommendation) = moderation.recommendation {
+        lines.push(Line::from(vec![
+            Span::styled("  Recommend: ", Style::new().fg(theme.dim)),
+            recommendation_badge(theme, recommendation),
+        ]));
+    }
+    if let Some(flagged) = moderation.flagged {
+        lines.push(Line::from(vec![
+            Span::styled("  Flagged:   ", Style::new().fg(theme.dim)),
+            Span::styled(
+                if flagged { "yes" } else { "no" },
+                Style::new().fg(if flagged { theme.error } else { theme.ok }),
+            ),
+        ]));
+    }
+    if let Some(score) = moderation.max_score {
+        lines.push(kv_line(theme, "  Max score: ", format!("{score:.2}")));
+    }
+    if let Some(reason) = &moderation.reason_summary {
+        lines.push(kv_line(theme, "  Reason:    ", reason.clone()));
+    }
+    if let Some(error) = &moderation.error {
+        lines.push(Line::from(vec![
+            Span::styled("  Error:     ", Style::new().fg(theme.dim)),
+            Span::styled(error.clone(), Style::new().fg(theme.error)),
+        ]));
+    }
+}
+
+/// A bracketed, bold badge span in the given color.
+fn badge(text: &str, color: Color) -> Span<'static> {
+    Span::styled(
+        format!("[{text}]"),
+        Style::new().fg(color).add_modifier(Modifier::BOLD),
+    )
+}
+
+/// Colored badge for a message moderation status.
+fn status_badge(theme: &Theme, status: MessageStatus) -> Span<'static> {
+    let (label, color) = match status {
+        MessageStatus::Uploading => ("uploading", theme.dim),
+        MessageStatus::Received => ("received", theme.accent),
+        MessageStatus::Pending => ("pending", theme.warn),
+        MessageStatus::Approved => ("approved", theme.ok),
+        MessageStatus::Rejected => ("rejected", theme.error),
+    };
+    badge(label, color)
+}
+
+/// Colored badge for a transcription/moderation job status.
+fn job_status_badge(theme: &Theme, status: TranscriptionStatus) -> Span<'static> {
+    let (label, color) = match status {
+        TranscriptionStatus::Pending => ("pending", theme.warn),
+        TranscriptionStatus::Succeeded => ("succeeded", theme.ok),
+        TranscriptionStatus::Failed => ("failed", theme.error),
+    };
+    badge(label, color)
+}
+
+/// Colored badge for a moderation recommendation.
+fn recommendation_badge(theme: &Theme, recommendation: ModerationRecommendation) -> Span<'static> {
+    let (label, color) = match recommendation {
+        ModerationRecommendation::Approve => ("approve", theme.ok),
+        ModerationRecommendation::Review => ("review", theme.warn),
+        ModerationRecommendation::Reject => ("reject", theme.error),
+    };
+    badge(label, color)
+}
+
+/// An accent subsection heading within a detail body.
+fn subheader(theme: &Theme, title: &'static str) -> Line<'static> {
+    Line::from(Span::styled(title, Style::new().fg(theme.accent)))
+}
+
+/// A compact `MM-DD HH:MM` timestamp for list rows.
+fn short_time(at: OffsetDateTime) -> String {
+    let formatted = format_ts(at);
+    if formatted.is_char_boundary(16) && formatted.len() >= 16 {
+        formatted[5..16].replace('T', " ")
+    } else {
+        formatted
+    }
+}
+
+/// A single-line transcription snippet for a list row.
+fn transcription_snippet(message: &Message) -> String {
+    message
+        .latest_transcription
+        .as_ref()
+        .and_then(|transcription| transcription.text.as_deref())
+        .map_or_else(
+            || "(no transcription)".to_owned(),
+            |text| truncate(&text.split_whitespace().collect::<Vec<_>>().join(" "), 40),
+        )
+}
+
+/// Truncate `text` to at most `max` characters, appending an ellipsis when cut.
+fn truncate(text: &str, max: usize) -> String {
+    if text.chars().count() > max {
+        let kept: String = text.chars().take(max.saturating_sub(1)).collect();
+        format!("{kept}…")
+    } else {
+        text.to_owned()
+    }
 }
 
 /// The title header line for a screen body.
