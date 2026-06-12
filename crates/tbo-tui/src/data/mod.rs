@@ -2,13 +2,14 @@
 //!
 //! Bridges the `tbo-auth` session to the operator client via
 //! [`SessionTokenProvider`] and hosts the per-screen controllers that fetch and
-//! cache backend data off the UI thread — both the operator API and, for the
-//! System Health dashboard, a booth's Prometheus `/metrics` scrape. Each
-//! controller mirrors the [`AuthController`](crate::auth::AuthController)
+//! cache backend data off the UI thread — the operator API, a booth's
+//! Prometheus `/metrics` scrape (System Health), and the booth debug-server
+//! REST snapshots (Debug panel). Each controller mirrors the [`AuthController`](crate::auth::AuthController)
 //! pattern: a background `tokio` task performs the request and the UI thread
 //! applies the result on each tick via `drain`, so rendering never blocks on
 //! the network.
 
+mod debug;
 mod events;
 mod messages;
 mod questions;
@@ -27,6 +28,7 @@ use time::OffsetDateTime;
 use tbo_auth::{ReqwestTransport as AuthTransport, SessionManager, TokenStore};
 use tbo_operator_client::{OperatorClient, OperatorError, ReqwestTransport, Result, TokenProvider};
 
+pub use debug::DebugController;
 pub use events::EventsController;
 pub use messages::MessagesController;
 pub use questions::QuestionsController;

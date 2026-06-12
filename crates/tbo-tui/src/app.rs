@@ -11,9 +11,9 @@ use tokio::time::Duration;
 
 use crate::auth::{AuthController, AuthPhase};
 use crate::data::{
-    EventsController, MessagesController, QuestionsController, SessionTokenProvider,
-    SessionsController, SharedSession, StatsController, StatusController, SystemController,
-    SystemHealthController, TokensController,
+    DebugController, EventsController, MessagesController, QuestionsController,
+    SessionTokenProvider, SessionsController, SharedSession, StatsController, StatusController,
+    SystemController, SystemHealthController, TokensController,
 };
 use crate::event::{AppEvent, EventLoop};
 use crate::tui::Tui;
@@ -41,6 +41,7 @@ pub struct App {
     stats: StatsController,
     system: SystemController,
     system_health: Option<SystemHealthController>,
+    debug: Option<DebugController>,
     tokens: TokensController,
     modal: Option<Modal>,
     should_quit: bool,
@@ -77,6 +78,7 @@ impl App {
         let sessions = SessionsController::new(api.clone());
 
         let system_health = Self::build_system_health(&config, &mut toasts);
+        let debug = Self::build_debug(&config, &mut toasts);
 
         Ok(Self {
             config,
@@ -92,6 +94,7 @@ impl App {
             stats: StatsController::new(api.clone()),
             system: SystemController::new(api.clone()),
             system_health,
+            debug,
             tokens: TokensController::new(api),
             modal: None,
             should_quit: false,
@@ -108,6 +111,23 @@ impl App {
             Err(err) => {
                 toasts.warn(format!(
                     "System Health unavailable for booth {}: {err}",
+                    booth.id
+                ));
+                None
+            }
+        }
+    }
+
+    /// Build the Debug-panel controller for the first configured booth, if any.
+    /// A construction failure is surfaced as a warning toast and leaves the
+    /// panel disabled.
+    fn build_debug(config: &Config, toasts: &mut Toasts) -> Option<DebugController> {
+        let booth = config.booths.first()?;
+        match DebugController::from_config(booth) {
+            Ok(controller) => Some(controller),
+            Err(err) => {
+                toasts.warn(format!(
+                    "Debug panel unavailable for booth {}: {err}",
                     booth.id
                 ));
                 None
@@ -223,6 +243,13 @@ impl App {
         self.system_health.as_ref()
     }
 
+    /// The Debug-panel controller (drives the booth Debug screen), present only
+    /// when a booth is configured.
+    #[must_use]
+    pub fn debug(&self) -> Option<&DebugController> {
+        self.debug.as_ref()
+    }
+
     /// The API-tokens controller (drives the Tokens screen).
     #[must_use]
     pub fn tokens(&self) -> &TokensController {
@@ -254,6 +281,9 @@ impl App {
                     self.system.tick(self.screen == Screen::LiveSystem);
                     if let Some(health) = self.system_health.as_mut() {
                         health.tick(self.screen == Screen::SystemHealth);
+                    }
+                    if let Some(debug) = self.debug.as_mut() {
+                        debug.tick(self.screen == Screen::Debug);
                     }
                     self.tokens.tick(self.screen == Screen::Tokens);
                     self.drain_token_actions();
@@ -337,6 +367,13 @@ impl App {
             }
             KeyCode::Char('u' | 'U') if self.screen == Screen::Tokens => {
                 self.tokens.load_usage_selected();
+            }
+            KeyCode::Char('v' | 'V') if self.screen == Screen::Debug => {
+                if let Some(debug) = self.debug.as_mut() {
+                    debug.cycle_log_level();
+                    self.toasts
+                        .info(format!("Log level: {}", debug.log_level()));
+                }
             }
             KeyCode::Char('l' | 'L') if self.screen == Screen::Settings => self.begin_login(),
             KeyCode::Char('o' | 'O') if self.screen == Screen::Settings => {
@@ -579,8 +616,13 @@ impl App {
                     health.refresh();
                 }
             }
+            Screen::Debug => {
+                if let Some(debug) = self.debug.as_mut() {
+                    debug.refresh();
+                }
+            }
             Screen::Tokens => self.tokens.refresh(),
-            _ => {}
+            Screen::Settings => {}
         }
     }
 
