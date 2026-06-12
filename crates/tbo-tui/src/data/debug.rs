@@ -1,5 +1,5 @@
-//! Background polling of the booth debug server's REST snapshots for the
-//! Debug panel.
+//! Background polling — and optional live telemetry streaming — of the booth
+//! debug server for the Debug panel.
 //!
 //! Mirrors the [`SystemHealthController`](super::SystemHealthController) shape:
 //! `refresh` spawns the network work off the UI thread, `drain` applies a
@@ -7,15 +7,27 @@
 //! screen is focused. One round fetches the state, GPIO, audio, logs, and
 //! config endpoints concurrently; each endpoint's result is independent so a
 //! single failure leaves the other panels intact (the last good value is kept).
+//!
+//! The panel can additionally subscribe to the booth's telemetry WebSocket
+//! (`toggle_live`): a background task forwards each decoded record over a
+//! channel and `drain` folds it into the cached snapshots, so the panels track
+//! booth activity in real time. While live the REST poll is suspended (after an
+//! initial seed) and telemetry drives the state, GPIO, audio, and log panels,
+//! mirroring the web client's preference for the socket over polling.
 
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
+use futures::StreamExt;
+use time::OffsetDateTime;
+use time::format_description::well_known::Rfc3339;
 use tokio::sync::mpsc::error::TryRecvError;
 use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
+use tokio::task::JoinHandle;
 
 use tbo_booth_client::{
-    AudioMeterSnapshot, BoothClient, BoothTransport, ConfigRedacted, GpioSnapshot, LogEntry,
-    ReqwestBoothTransport, Result as BoothResult, StatusSnapshot,
+    AudioLevel, AudioMeterSnapshot, BoothClient, BoothTransport, ConfigRedacted, GpioEdge,
+    GpioPinSnapshot, GpioSnapshot, LogEntry, ReqwestBoothTransport, Result as BoothResult,
+    StatusSnapshot, TelemetryEvent, TelemetryRecord, connect_telemetry,
 };
 use tbo_core::config::BoothConfig;
 
@@ -52,6 +64,7 @@ where
     label: String,
     base_url: String,
     pinned_sha256: Option<String>,
+    token: Option<String>,
     client: BoothClient<T>,
     log_level: String,
     rx: Option<UnboundedReceiver<DebugFetch>>,
@@ -64,6 +77,11 @@ where
     audio: Option<AudioMeterSnapshot>,
     logs: Vec<LogEntry>,
     config: Option<ConfigRedacted>,
+    live: bool,
+    stream_rx: Option<UnboundedReceiver<std::result::Result<TelemetryRecord, String>>>,
+    stream_task: Option<JoinHandle<()>>,
+    last_record_id: Option<u64>,
+    live_error: Option<(String, Instant)>,
 }
 
 impl DebugController<ReqwestBoothTransport> {
@@ -82,6 +100,7 @@ impl DebugController<ReqwestBoothTransport> {
         Ok(Self::new(
             label,
             booth.debug_base_url.clone(),
+            booth.debug_token.clone(),
             booth.pinned_sha256.clone(),
             client,
         ))
@@ -96,6 +115,7 @@ where
     pub fn new(
         label: String,
         base_url: String,
+        token: Option<String>,
         pinned_sha256: Option<String>,
         client: BoothClient<T>,
     ) -> Self {
@@ -103,6 +123,7 @@ where
             label,
             base_url,
             pinned_sha256,
+            token,
             client,
             log_level: "info".to_owned(),
             rx: None,
@@ -115,6 +136,11 @@ where
             audio: None,
             logs: Vec::new(),
             config: None,
+            live: false,
+            stream_rx: None,
+            stream_task: None,
+            last_record_id: None,
+            live_error: None,
         }
     }
 
@@ -146,6 +172,19 @@ where
     #[must_use]
     pub fn is_refreshing(&self) -> bool {
         self.in_flight
+    }
+
+    /// Whether the live telemetry subscription is currently active.
+    #[must_use]
+    pub fn is_live(&self) -> bool {
+        self.live
+    }
+
+    /// The most recent live-stream error and when it occurred, if the socket
+    /// failed or closed.
+    #[must_use]
+    pub fn live_error(&self) -> Option<&(String, Instant)> {
+        self.live_error.as_ref()
     }
 
     /// When the most recent fully-successful poll completed.
@@ -259,10 +298,20 @@ where
     }
 
     /// Advance the controller: apply results, then auto-poll when the screen is
-    /// `focused` and the poll interval has elapsed.
+    /// `focused`. The panels are always seeded with one REST round (the config
+    /// never arrives over telemetry); after that, polling continues on the
+    /// interval only while the live socket is off — when live, telemetry drives
+    /// the panels instead.
     pub fn tick(&mut self, focused: bool) {
         self.drain();
-        if focused && self.is_due(Instant::now()) {
+        self.drain_stream();
+        if !focused {
+            return;
+        }
+        let seeded = self.last_refresh.is_some();
+        let should_seed = !seeded && !self.in_flight;
+        let should_poll = seeded && !self.live && self.is_due(Instant::now());
+        if should_seed || should_poll {
             self.refresh();
         }
     }
@@ -314,6 +363,163 @@ where
         }
     }
 
+    /// Toggle the live telemetry subscription on or off.
+    ///
+    /// Starting spawns a background task that connects to the booth telemetry
+    /// WebSocket (replaying from just after the most recent record id when
+    /// reconnecting) and forwards each decoded record into the panels via
+    /// [`tick`](Self::tick); stopping aborts that task. While live the REST poll
+    /// is suspended.
+    pub fn toggle_live(&mut self) {
+        if self.live {
+            self.stop_live();
+            return;
+        }
+        self.live = true;
+        self.live_error = None;
+        let (tx, rx) = unbounded_channel();
+        self.stream_rx = Some(rx);
+        let base_url = self.base_url.clone();
+        let token = self.token.clone();
+        let pinned = self.pinned_sha256.clone();
+        let replay_from = self.last_record_id.map(|id| id.saturating_add(1));
+        let task = tokio::spawn(async move {
+            match connect_telemetry(&base_url, token.as_deref(), pinned.as_deref(), replay_from)
+                .await
+            {
+                Ok(mut stream) => {
+                    while let Some(item) = stream.next().await {
+                        if tx.send(item.map_err(|err| err.to_string())).is_err() {
+                            break;
+                        }
+                    }
+                }
+                Err(err) => {
+                    let _ = tx.send(Err(err.to_string()));
+                }
+            }
+        });
+        self.stream_task = Some(task);
+    }
+
+    /// Stop the live subscription and release the background streaming task.
+    fn stop_live(&mut self) {
+        self.live = false;
+        if let Some(task) = self.stream_task.take() {
+            task.abort();
+        }
+        self.stream_rx = None;
+    }
+
+    /// Drain any live telemetry records delivered since the last tick.
+    fn drain_stream(&mut self) {
+        loop {
+            let Some(rx) = self.stream_rx.as_mut() else {
+                return;
+            };
+            match rx.try_recv() {
+                Ok(Ok(record)) => self.apply_record(record),
+                Ok(Err(error)) => {
+                    self.live_error = Some((error, Instant::now()));
+                    self.stop_live();
+                    return;
+                }
+                Err(TryRecvError::Empty) => return,
+                Err(TryRecvError::Disconnected) => {
+                    self.stop_live();
+                    return;
+                }
+            }
+        }
+    }
+
+    /// Fold one live telemetry record into the cached panel snapshots.
+    fn apply_record(&mut self, record: TelemetryRecord) {
+        self.last_record_id = Some(record.id);
+        match record.event {
+            TelemetryEvent::StateTransition { to, .. } => {
+                let updated_at = system_time_rfc3339(record.ts);
+                if let Some(state) = self.state.as_mut() {
+                    state.state = to;
+                    state.updated_at = updated_at;
+                } else {
+                    self.state = Some(StatusSnapshot {
+                        state: to,
+                        updated_at,
+                        current_question_id: None,
+                        current_message_id: None,
+                        last_error: None,
+                    });
+                }
+            }
+            TelemetryEvent::GpioEdge(edge) => self.apply_gpio_edge(&edge, record.id),
+            TelemetryEvent::AudioLevel(level) => self.apply_audio_level(&level),
+            TelemetryEvent::AudioDeviceChange { name, .. } => {
+                if let Some(audio) = self.audio.as_mut() {
+                    audio.current_device = Some(name);
+                }
+            }
+            TelemetryEvent::Log {
+                level,
+                target,
+                message,
+            } => self.push_live_log(record.ts, level, target, message),
+            TelemetryEvent::Error { source, message } => {
+                self.push_live_log(record.ts, "error".to_owned(), source, message);
+            }
+            _ => {}
+        }
+    }
+
+    /// Apply a GPIO edge to the cached snapshot, updating the matching pin or
+    /// inserting a new one.
+    fn apply_gpio_edge(&mut self, edge: &GpioEdge, record_id: u64) {
+        let gpio = self.gpio.get_or_insert_with(GpioSnapshot::default);
+        if let Some(pin) = gpio.pins.iter_mut().find(|pin| pin.role == edge.role) {
+            pin.level = edge.level;
+            pin.debounced_state = edge.level;
+            pin.last_edge_monotonic_ns = edge.at_monotonic_ns;
+            pin.last_event_id = record_id;
+        } else {
+            gpio.pins.push(GpioPinSnapshot {
+                role: edge.role.clone(),
+                level: edge.level,
+                debounced_state: edge.level,
+                last_edge_monotonic_ns: edge.at_monotonic_ns,
+                last_event_id: record_id,
+            });
+        }
+    }
+
+    /// Apply an audio level-meter sample to the cached snapshot, converting the
+    /// linear `[0,1]` magnitudes to dBFS.
+    fn apply_audio_level(&mut self, level: &AudioLevel) {
+        let audio = self.audio.get_or_insert_with(silent_audio_snapshot);
+        let level_dbfs = linear_to_dbfs(level.rms);
+        let peak_dbfs = linear_to_dbfs(level.peak);
+        if level.channel == "output" {
+            audio.output_level_dbfs = level_dbfs;
+            audio.output_peak_dbfs = peak_dbfs;
+        } else {
+            audio.input_level_dbfs = level_dbfs;
+            audio.input_peak_dbfs = peak_dbfs;
+        }
+    }
+
+    /// Prepend a live log line, capping the buffer at [`LOG_LIMIT`].
+    fn push_live_log(&mut self, ts: SystemTime, level: String, target: String, message: String) {
+        self.logs.insert(
+            0,
+            LogEntry {
+                ts: system_time_rfc3339(ts),
+                level,
+                target,
+                message,
+            },
+        );
+        self.logs.truncate(LOG_LIMIT);
+    }
+
     /// Await and apply the next pending result (test helper).
     #[cfg(test)]
     async fn recv_once(&mut self) {
@@ -323,6 +529,35 @@ where
             self.apply(fetch);
         }
     }
+}
+
+/// Convert a linear sample magnitude in `[0, 1]` to dBFS, flooring at `-120`.
+fn linear_to_dbfs(magnitude: f32) -> f32 {
+    if magnitude <= 0.0 {
+        return -120.0;
+    }
+    (20.0 * magnitude.log10()).clamp(-120.0, 0.0)
+}
+
+/// A silent audio snapshot (all channels at the `-120` dBFS floor) used to seed
+/// the cache before the first REST poll when telemetry arrives first.
+fn silent_audio_snapshot() -> AudioMeterSnapshot {
+    AudioMeterSnapshot {
+        input_level_dbfs: -120.0,
+        output_level_dbfs: -120.0,
+        input_peak_dbfs: -120.0,
+        output_peak_dbfs: -120.0,
+        current_device: None,
+        sample_rate_hz: None,
+        updated_at: None,
+    }
+}
+
+/// Format a [`SystemTime`] as an RFC3339 string, falling back to `unknown`.
+fn system_time_rfc3339(ts: SystemTime) -> String {
+    OffsetDateTime::from(ts)
+        .format(&Rfc3339)
+        .unwrap_or_else(|_| "unknown".to_owned())
 }
 
 #[cfg(test)]
@@ -412,9 +647,18 @@ mod tests {
         DebugController::new(
             "booth-1".to_owned(),
             "http://127.0.0.1:8080".to_owned(),
+            Some("token".to_owned()),
             None,
             client,
         )
+    }
+
+    fn record(id: u64, event: TelemetryEvent) -> TelemetryRecord {
+        TelemetryRecord {
+            id,
+            ts: SystemTime::UNIX_EPOCH,
+            event,
+        }
     }
 
     #[tokio::test]
@@ -502,5 +746,117 @@ mod tests {
 
         controller.in_flight = true;
         assert!(!controller.is_due(now + POLL_INTERVAL));
+    }
+
+    #[test]
+    fn live_state_transition_updates_state_panel() {
+        let mut controller = controller(RoutingTransport::default());
+        controller.apply_record(record(
+            10,
+            TelemetryEvent::StateTransition {
+                from: "idle".to_owned(),
+                to: "dialing".to_owned(),
+                cause: "hook_off".to_owned(),
+                at_monotonic_ns: 1,
+            },
+        ));
+        assert_eq!(controller.state().unwrap().state, "dialing");
+        assert_eq!(controller.last_record_id, Some(10));
+    }
+
+    #[test]
+    fn live_gpio_edge_inserts_then_updates_pin() {
+        let mut controller = controller(RoutingTransport::default());
+        controller.apply_record(record(
+            1,
+            TelemetryEvent::GpioEdge(GpioEdge {
+                role: "hook".to_owned(),
+                level: true,
+                at_monotonic_ns: 5,
+            }),
+        ));
+        assert_eq!(controller.gpio().unwrap().pins.len(), 1);
+        assert!(controller.gpio().unwrap().pins[0].level);
+
+        controller.apply_record(record(
+            2,
+            TelemetryEvent::GpioEdge(GpioEdge {
+                role: "hook".to_owned(),
+                level: false,
+                at_monotonic_ns: 9,
+            }),
+        ));
+        let pins = &controller.gpio().unwrap().pins;
+        assert_eq!(pins.len(), 1, "same role updates in place");
+        assert!(!pins[0].level);
+        assert_eq!(pins[0].last_event_id, 2);
+    }
+
+    #[test]
+    fn live_audio_level_updates_only_its_channel() {
+        let mut controller = controller(RoutingTransport::default());
+        controller.apply_record(record(
+            1,
+            TelemetryEvent::AudioLevel(AudioLevel {
+                channel: "output".to_owned(),
+                peak: 1.0,
+                rms: 1.0,
+                at_monotonic_ns: 1,
+            }),
+        ));
+        let audio = controller.audio().unwrap();
+        assert!((audio.output_level_dbfs - 0.0).abs() < 1e-3);
+        // The untouched input channel stays at the silent floor.
+        assert!(audio.input_level_dbfs <= -120.0);
+    }
+
+    #[test]
+    fn live_log_event_prepends_to_logs() {
+        let mut controller = controller(RoutingTransport::default());
+        controller.apply_record(record(
+            1,
+            TelemetryEvent::Log {
+                level: "warn".to_owned(),
+                target: "booth".to_owned(),
+                message: "hi".to_owned(),
+            },
+        ));
+        let first = controller.logs().first().unwrap();
+        assert_eq!(first.message, "hi");
+        assert_eq!(first.level, "warn");
+    }
+
+    #[test]
+    fn linear_to_dbfs_maps_endpoints() {
+        assert!((linear_to_dbfs(1.0) - 0.0).abs() < 1e-3);
+        assert!(linear_to_dbfs(0.0) <= -120.0);
+        assert!(linear_to_dbfs(-1.0) <= -120.0);
+    }
+
+    #[tokio::test]
+    async fn toggle_live_sets_and_clears_flag() {
+        let mut controller = controller(RoutingTransport::default());
+        assert!(!controller.is_live());
+
+        controller.toggle_live();
+        assert!(controller.is_live());
+
+        controller.toggle_live();
+        assert!(!controller.is_live());
+    }
+
+    #[tokio::test]
+    async fn stream_error_records_live_error_and_stops() {
+        let mut controller = controller(RoutingTransport::default());
+        controller.live = true;
+        let (tx, rx) = unbounded_channel();
+        controller.stream_rx = Some(rx);
+        tx.send(Err("boom".to_owned())).unwrap();
+
+        controller.drain_stream();
+
+        assert!(!controller.is_live());
+        assert!(controller.live_error().is_some());
+        assert!(controller.live_error().unwrap().0.contains("boom"));
     }
 }
