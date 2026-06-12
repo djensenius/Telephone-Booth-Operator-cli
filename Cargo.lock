@@ -1647,6 +1647,15 @@ dependencies = [
 [[package]]
 name = "tbo-booth-client"
 version = "0.1.0"
+dependencies = [
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tbo-core",
+ "tbo-metrics",
+ "thiserror 2.0.18",
+ "tokio",
+]
 
 [[package]]
 name = "tbo-core"
