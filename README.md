@@ -69,8 +69,17 @@ cargo run -p tbo-tui   # runs the `tb-operator` binary
 
 ## Installation
 
-Releases ship as `.deb` packages (Linux amd64/arm64/armhf) through the shared
-Telephone-Booth APT repository, and via a Homebrew tap on macOS (Apple Silicon).
+### Homebrew (macOS, Apple Silicon)
+
+```sh
+brew tap djensenius/tap
+brew install telephone-booth-operator-cli
+```
+
+### Debian / Ubuntu (amd64, arm64, armhf)
+
+Releases ship as `.deb` packages through the shared Telephone-Booth APT
+repository.
 
 ## License
 
