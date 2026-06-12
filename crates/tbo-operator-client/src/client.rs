@@ -6,7 +6,8 @@ use time::format_description::well_known::Rfc3339;
 
 use tbo_core::domain::{
     BoothEventList, BoothStatus, CallSessionDetail, CallSessionList, Message, MessageList,
-    MessageStatus, OperatorMe, QuestionList, QuestionStatus, StatusHistory, TranscriptionList,
+    MessageStatus, OperatorMe, QuestionList, QuestionStatus, StatsOverview, StatsWindow,
+    StatusHistory, TranscriptionList,
 };
 
 use crate::error::{OperatorError, Result};
@@ -187,6 +188,18 @@ impl<T: HttpTransport, A: TokenProvider> OperatorClient<T, A> {
     /// The signed-in operator's profile (`GET /v1/auth/me`).
     pub async fn operator_me(&self) -> Result<OperatorMe> {
         self.get_json("/v1/auth/me", &[], true).await
+    }
+
+    /// Usage statistics overview (`GET /v1/stats/overview`).
+    ///
+    /// `window` selects the aggregation range; when omitted the server defaults
+    /// to the last 7 days.
+    pub async fn stats_overview(&self, window: Option<StatsWindow>) -> Result<StatsOverview> {
+        let mut query = Vec::new();
+        if let Some(window) = window {
+            query.push(("window", window.as_query().to_owned()));
+        }
+        self.get_json("/v1/stats/overview", &query, true).await
     }
 
     /// Resolve the bearer token, issue the request, and decode the response.
@@ -396,6 +409,25 @@ mod tests {
                 ("limit".to_owned(), "100".to_owned()),
             ]
         );
+    }
+
+    #[tokio::test]
+    async fn stats_overview_sends_window_and_bearer() {
+        let body = r#"{"window":"7d","rangeEnd":"2026-01-01T00:00:00Z","generatedAt":"2026-01-01T00:00:00Z","timezone":"UTC","calls":{"total":3,"completed":2,"inProgress":0,"outcomes":{"recording_completed":2},"perDay":[]},"messages":{"total":2,"byStatus":{"pending":1}},"playback":{"totalPlaybacks":5},"pickupsHangups":{"pickups":3,"hangups":3,"digitsDialed":{"5":1}},"uploads":{"succeeded":2,"failed":0},"topQuestions":[],"hourly":[],"busiest":{},"boothBreakdown":[]}"#;
+        let transport = FakeTransport::with_responses(vec![ok(body)]);
+        let client = authed(transport.clone());
+
+        let overview = client
+            .stats_overview(Some(StatsWindow::Week))
+            .await
+            .unwrap();
+
+        assert_eq!(overview.calls.total, 3);
+        assert_eq!(overview.messages.total, 2);
+        let calls = transport.calls();
+        assert_eq!(calls[0].path, "/v1/stats/overview");
+        assert_eq!(calls[0].query, vec![("window".to_owned(), "7d".to_owned())]);
+        assert_eq!(calls[0].bearer.as_deref(), Some("token-123"));
     }
 
     #[tokio::test]
