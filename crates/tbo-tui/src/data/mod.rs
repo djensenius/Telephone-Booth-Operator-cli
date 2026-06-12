@@ -8,6 +8,7 @@
 //! via `drain`, so rendering never blocks on the network.
 
 mod messages;
+mod questions;
 mod status;
 
 use std::sync::Arc;
@@ -19,6 +20,7 @@ use tbo_auth::{ReqwestTransport as AuthTransport, SessionManager, TokenStore};
 use tbo_operator_client::{OperatorClient, OperatorError, ReqwestTransport, Result, TokenProvider};
 
 pub use messages::MessagesController;
+pub use questions::QuestionsController;
 pub use status::StatusController;
 
 /// The session manager shared between the auth controller and the data layer.

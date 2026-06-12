@@ -10,7 +10,9 @@ use tbo_operator_client::OperatorClient;
 use tokio::time::Duration;
 
 use crate::auth::{AuthController, AuthPhase};
-use crate::data::{MessagesController, SessionTokenProvider, SharedSession, StatusController};
+use crate::data::{
+    MessagesController, QuestionsController, SessionTokenProvider, SharedSession, StatusController,
+};
 use crate::event::{AppEvent, EventLoop};
 use crate::tui::Tui;
 use crate::ui;
@@ -30,6 +32,7 @@ pub struct App {
     auth: AuthController,
     status: StatusController,
     messages: MessagesController,
+    questions: QuestionsController,
     should_quit: bool,
 }
 
@@ -59,7 +62,8 @@ impl App {
             SessionTokenProvider::new(session),
         )?;
         let status = StatusController::new(api.clone());
-        let messages = MessagesController::new(api);
+        let messages = MessagesController::new(api.clone());
+        let questions = QuestionsController::new(api);
 
         Ok(Self {
             config,
@@ -69,6 +73,7 @@ impl App {
             auth,
             status,
             messages,
+            questions,
             should_quit: false,
         })
     }
@@ -144,6 +149,12 @@ impl App {
         &self.messages
     }
 
+    /// The questions controller (drives the Questions screen).
+    #[must_use]
+    pub fn questions(&self) -> &QuestionsController {
+        &self.questions
+    }
+
     /// Run the draw/event loop until the user quits.
     pub async fn run(mut self, terminal: &mut Tui) -> Result<()> {
         let mut events = EventLoop::new(TICK);
@@ -154,6 +165,7 @@ impl App {
                     self.auth.drain(&mut self.toasts);
                     self.status.tick(self.screen == Screen::Status);
                     self.messages.tick(self.screen == Screen::Messages);
+                    self.questions.tick(self.screen == Screen::Questions);
                     self.toasts.prune();
                 }
                 AppEvent::Key(key) => self.on_key(key),
@@ -182,12 +194,8 @@ impl App {
             }
             KeyCode::Tab | KeyCode::Right => self.screen = self.screen.next(),
             KeyCode::BackTab | KeyCode::Left => self.screen = self.screen.prev(),
-            KeyCode::Down | KeyCode::Char('j') if self.screen == Screen::Messages => {
-                self.messages.select_next();
-            }
-            KeyCode::Up | KeyCode::Char('k') if self.screen == Screen::Messages => {
-                self.messages.select_prev();
-            }
+            KeyCode::Down | KeyCode::Char('j') => self.select_next_active(),
+            KeyCode::Up | KeyCode::Char('k') => self.select_prev_active(),
             KeyCode::Char('r' | 'R') => self.refresh_active(),
             KeyCode::Char('l' | 'L') if self.screen == Screen::Settings => self.begin_login(),
             KeyCode::Char('o' | 'O') if self.screen == Screen::Settings => {
@@ -203,6 +211,25 @@ impl App {
         match self.screen {
             Screen::Status => self.status.refresh(),
             Screen::Messages => self.messages.refresh(),
+            Screen::Questions => self.questions.refresh(),
+            _ => {}
+        }
+    }
+
+    /// Advance the selection on the active list screen, if any.
+    fn select_next_active(&mut self) {
+        match self.screen {
+            Screen::Messages => self.messages.select_next(),
+            Screen::Questions => self.questions.select_next(),
+            _ => {}
+        }
+    }
+
+    /// Retreat the selection on the active list screen, if any.
+    fn select_prev_active(&mut self) {
+        match self.screen {
+            Screen::Messages => self.messages.select_prev(),
+            Screen::Questions => self.questions.select_prev(),
             _ => {}
         }
     }
