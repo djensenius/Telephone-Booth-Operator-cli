@@ -10,6 +10,12 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+# Every job only reads the repository (checkout, build, lint, docs); none need
+# write scopes. Declared explicitly so the workflow does not inherit broader
+# default token permissions.
+permissions:
+  contents: read
+
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
