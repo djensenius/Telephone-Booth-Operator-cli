@@ -87,7 +87,11 @@ where
                 Ok(result) => self.apply(result),
                 Err(TryRecvError::Empty) => return,
                 Err(TryRecvError::Disconnected) => {
+                    // The fetch task ended without sending (e.g. it panicked or
+                    // was cancelled). Clear the in-flight flag so the controller
+                    // can recover and re-poll, rather than wedging forever.
                     self.rx = None;
+                    self.in_flight = false;
                     return;
                 }
             }
@@ -244,5 +248,26 @@ mod tests {
         // In flight: never due.
         controller.in_flight = true;
         assert!(!controller.is_due(now + POLL_INTERVAL));
+    }
+
+    #[tokio::test]
+    async fn drain_recovers_when_fetch_task_drops_without_sending() {
+        let mut controller = controller(
+            200,
+            r#"{"state":"idle","updatedAt":"2026-01-01T00:00:00Z"}"#,
+        );
+        // Simulate a fetch task that ended without sending (panic/cancel): an
+        // in-flight request whose sender has already been dropped.
+        let (tx, rx) = unbounded_channel::<std::result::Result<BoothStatus, String>>();
+        drop(tx);
+        controller.rx = Some(rx);
+        controller.in_flight = true;
+
+        controller.drain();
+
+        assert!(!controller.is_refreshing());
+        assert!(controller.rx.is_none());
+        // The controller must remain able to re-poll afterwards.
+        assert!(controller.is_due(Instant::now()));
     }
 }
