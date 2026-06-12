@@ -188,3 +188,77 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git commit -am "telephone-booth-operator-cli ${version}"
           git push origin main
+
+  dispatch-apt:
+    name: dispatch APT publish
+    needs: [resolve, release]
+    runs-on: ubuntu-latest
+    # Only refresh the shared APT repo for real (non-draft) releases.
+    if: ${{ needs.resolve.outputs.draft != 'true' }}
+    permissions:
+      contents: read
+    env:
+      # The .debs are published into the Telephone-Booth project's existing
+      # shared APT repo (its gh-pages). That repo's publish-apt.yml accepts a
+      # `source_repo` input so this CLI can contribute its packages.
+      APT_REPO: djensenius/Telephone-Booth
+    steps:
+      - name: Check for dispatch token
+        id: token
+        env:
+          APT_DISPATCH_TOKEN: ${{ secrets.APT_DISPATCH_TOKEN }}
+        run: |
+          if [ -n "$APT_DISPATCH_TOKEN" ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::APT_DISPATCH_TOKEN is not set; skipping shared APT publish. The .debs remain attached to the GitHub release."
+          fi
+      - name: Dispatch publish-apt on the shared APT repo
+        if: ${{ steps.token.outputs.present == 'true' }}
+        env:
+          # A PAT with actions:write on the APT repo — GITHUB_TOKEN cannot
+          # trigger workflows in another repository.
+          GH_TOKEN: ${{ secrets.APT_DISPATCH_TOKEN }}
+          TAG: ${{ needs.resolve.outputs.tag }}
+          SOURCE_REPO: ${{ github.repository }}
+        run: |
+          set -eu
+          echo "Dispatching publish-apt.yml on $APT_REPO for $TAG (source=$SOURCE_REPO)"
+          # Record the latest run id so we can confirm a new one registers.
+          previous_id="$(gh run list \
+            --repo "$APT_REPO" \
+            --workflow publish-apt.yml \
+            --limit 1 \
+            --json databaseId \
+            --jq '.[0].databaseId // 0')"
+          echo "previous publish-apt run id: $previous_id"
+
+          gh workflow run publish-apt.yml \
+            --repo "$APT_REPO" \
+            --ref main \
+            -f "tag=$TAG" \
+            -f "source_repo=$SOURCE_REPO"
+
+          # GitHub takes a few seconds to register the dispatch; poll for it.
+          new_id=""
+          for _ in $(seq 1 30); do
+            sleep 2
+            candidate="$(gh run list \
+              --repo "$APT_REPO" \
+              --workflow publish-apt.yml \
+              --limit 1 \
+              --json databaseId \
+              --jq '.[0].databaseId // 0')"
+            if [ "$candidate" != "$previous_id" ] && [ "$candidate" != "0" ]; then
+              new_id="$candidate"
+              break
+            fi
+          done
+
+          if [ -z "$new_id" ]; then
+            echo "::error::publish-apt.yml did not register a new run within 60s."
+            echo "::error::Recover with: gh workflow run publish-apt.yml --repo $APT_REPO --ref main -f tag=$TAG -f source_repo=$SOURCE_REPO"
+            exit 1
+          fi
+          echo "::notice::publish-apt run $new_id dispatched for $TAG on $APT_REPO"

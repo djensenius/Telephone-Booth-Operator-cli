@@ -79,7 +79,21 @@ brew install telephone-booth-operator-cli
 ### Debian / Ubuntu (amd64, arm64, armhf)
 
 Releases ship as `.deb` packages through the shared Telephone-Booth APT
-repository.
+repository. Add the repo once (this is the same keyring and source line the
+booth package uses), then install:
+
+```sh
+curl -fsSL https://djensenius.github.io/Telephone-Booth/telephone-booth-archive-keyring.gpg \
+  | sudo install -m 0644 /dev/stdin /usr/share/keyrings/telephone-booth-archive-keyring.gpg
+
+echo "deb [signed-by=/usr/share/keyrings/telephone-booth-archive-keyring.gpg] https://djensenius.github.io/Telephone-Booth stable main" \
+  | sudo tee /etc/apt/sources.list.d/telephone-booth.list
+
+sudo apt update
+sudo apt install telephone-booth-operator-cli
+```
+
+The binary is installed as `/usr/bin/tb-operator`.
 
 ## License
 
