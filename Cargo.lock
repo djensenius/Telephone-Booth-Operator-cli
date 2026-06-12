@@ -944,7 +944,6 @@ dependencies = [
  "futures",
  "ratatui",
  "tbo-core",
- "time",
  "tokio",
  "tracing",
  "tracing-appender",
