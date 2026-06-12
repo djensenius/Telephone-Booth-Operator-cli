@@ -970,7 +970,7 @@ fn stats_ready_lines(
     lines.push(subheader(theme, "Messages"));
     lines.push(kv_line(theme, "Total:     ", messages.total.to_string()));
     if let Some(avg) = messages.average_duration_ms {
-        lines.push(kv_line(theme, "Avg length:", format_millis_f64(avg)));
+        lines.push(kv_line(theme, "Avg len:   ", format_millis_f64(avg)));
     }
     push_count_map(&mut lines, theme, &messages.by_status);
 
