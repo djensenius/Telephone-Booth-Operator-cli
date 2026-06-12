@@ -134,3 +134,57 @@ jobs:
           generate_release_notes: true
           fail_on_unmatched_files: true
           files: release/*
+
+  homebrew:
+    name: bump Homebrew formula
+    needs: [resolve, release]
+    runs-on: ubuntu-latest
+    # Only update the public tap for real (non-draft) releases.
+    if: ${{ needs.resolve.outputs.draft != 'true' }}
+    permissions:
+      contents: read
+    steps:
+      - name: Check for tap token
+        id: token
+        env:
+          TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          if [ -n "$TAP_TOKEN" ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::HOMEBREW_TAP_TOKEN is not set; skipping Homebrew formula bump."
+          fi
+      - name: Update formula in djensenius/homebrew-tap
+        if: ${{ steps.token.outputs.present == 'true' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          TAG: ${{ needs.resolve.outputs.tag }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          version="${TAG#v}"
+          asset="tb-operator-aarch64-apple-darwin.tar.gz"
+          url="https://github.com/${REPO}/releases/download/${TAG}/${asset}"
+
+          # Hash exactly what users will download.
+          gh release download "$TAG" --repo "$REPO" --pattern "$asset" --dir .
+          sha="$(sha256sum "$asset" | cut -d' ' -f1)"
+          echo "version=$version sha256=$sha"
+
+          git clone "https://x-access-token:${TAP_TOKEN}@github.com/djensenius/homebrew-tap.git" tap
+          formula="tap/Formula/telephone-booth-operator-cli.rb"
+          sed -i -E "s|^  version \".*\"|  version \"${version}\"|" "$formula"
+          sed -i -E "s|^      url \".*\"|      url \"${url}\"|" "$formula"
+          sed -i -E "s|^      sha256 \"[0-9a-f]+\"|      sha256 \"${sha}\"|" "$formula"
+
+          cd tap
+          if git diff --quiet; then
+            echo "Formula already up to date."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -am "telephone-booth-operator-cli ${version}"
+          git push origin main
