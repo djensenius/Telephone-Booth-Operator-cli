@@ -90,3 +90,12 @@ pub struct StatusUpdate {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub runtime_mode: Option<RuntimeMode>,
 }
+
+/// Recent booth status snapshots for operator charts
+/// (`GET /v1/status/history`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StatusHistory {
+    /// Status snapshots, newest first.
+    pub items: Vec<BoothStatus>,
+}

@@ -91,6 +91,15 @@ pub struct Transcription {
     pub translation_completed_at: Option<OffsetDateTime>,
 }
 
+/// All transcription attempts for a message, newest first
+/// (`GET /v1/messages/{id}/transcriptions`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TranscriptionList {
+    /// Transcription attempts, newest first.
+    pub items: Vec<Transcription>,
+}
+
 /// Moderation result for a message.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
