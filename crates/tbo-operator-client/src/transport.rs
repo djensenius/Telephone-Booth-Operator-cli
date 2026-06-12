@@ -107,6 +107,15 @@ pub trait WriteTransport: HttpTransport {
         content_type: &str,
         body: Vec<u8>,
     ) -> impl Future<Output = Result<HttpResponse>> + Send;
+
+    /// Issue a raw `GET` for the bytes at an absolute `url` (e.g. an Azure blob
+    /// SAS URL).
+    ///
+    /// Like [`put_bytes`](WriteTransport::put_bytes) the `url` is **not** joined
+    /// to the operator base URL and **no** bearer token is sent: the SAS token
+    /// embedded in the URL is the only credential. A non-2xx response maps to an
+    /// error. Used to download message/question audio for playback.
+    fn get_bytes(&self, url: &str) -> impl Future<Output = Result<Vec<u8>>> + Send;
 }
 
 /// A [`reqwest`]-backed transport using rustls.
@@ -253,6 +262,29 @@ impl WriteTransport for ReqwestTransport {
             .header(reqwest::header::CONTENT_TYPE, content_type)
             .body(body);
         send_text(request).await
+    }
+
+    async fn get_bytes(&self, url: &str) -> Result<Vec<u8>> {
+        let response = self
+            .client
+            .get(url)
+            .send()
+            .await
+            .map_err(|err| OperatorError::Transport(err.to_string()))?;
+        let status = response.status().as_u16();
+        if !(200..300).contains(&status) {
+            let body = response.text().await.unwrap_or_default();
+            return Err(match status {
+                401 | 403 => OperatorError::Unauthorized(status),
+                404 => OperatorError::NotFound,
+                _ => OperatorError::Http { status, body },
+            });
+        }
+        response
+            .bytes()
+            .await
+            .map(|bytes| bytes.to_vec())
+            .map_err(|err| OperatorError::Transport(err.to_string()))
     }
 }
 

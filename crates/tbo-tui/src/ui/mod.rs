@@ -89,10 +89,10 @@ fn status_hints(app: &App) -> &'static str {
         Screen::Settings => "  L log in | O sign out | Tab/Right next | 1-9 jump | q quit",
         Screen::Status => "  r refresh | Tab/Right next | Shift-Tab/Left prev | 1-9 jump | q quit",
         Screen::Messages => {
-            "  ↑/↓ select | a approve | x reject | t transcribe | m moderate | g translate | d delete | r reload | q quit"
+            "  ↑/↓ select | a approve | x reject | t transcribe | m moderate | g translate | d delete | p play | space pause | s stop | r reload | q quit"
         }
         Screen::Questions => {
-            "  ↑/↓ select | a activate | e deactivate | d archive | n new | r reload | q quit"
+            "  ↑/↓ select | a activate | e deactivate | d archive | n new | p play | space pause | s stop | r reload | q quit"
         }
         Screen::Sessions => "  ↑/↓ select | r reload | Tab/Right next | 1-9 jump | q quit",
         Screen::Events => "  ↑/↓ select | r reload | f follow | Tab/Right next | q quit",

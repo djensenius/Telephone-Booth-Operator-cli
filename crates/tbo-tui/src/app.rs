@@ -11,7 +11,7 @@ use tokio::time::Duration;
 
 use crate::auth::{AuthController, AuthPhase};
 use crate::data::{
-    DebugController, EventsController, MessagesController, QuestionsController,
+    DebugController, EventsController, MessagesController, PlaybackController, QuestionsController,
     SessionTokenProvider, SessionsController, SharedSession, StatsController, StatusController,
     SystemController, SystemHealthController, TokensController,
 };
@@ -43,6 +43,7 @@ pub struct App {
     system_health: Option<SystemHealthController>,
     debug: Option<DebugController>,
     tokens: TokensController,
+    playback: PlaybackController,
     modal: Option<Modal>,
     should_quit: bool,
 }
@@ -80,6 +81,11 @@ impl App {
         let system_health = Self::build_system_health(&config, &mut toasts);
         let debug = Self::build_debug(&config, &mut toasts);
 
+        let playback = PlaybackController::new(api.clone());
+        if let Some(reason) = playback.unavailable_reason() {
+            toasts.warn(format!("Audio playback unavailable: {reason}"));
+        }
+
         Ok(Self {
             config,
             theme,
@@ -96,6 +102,7 @@ impl App {
             system_health,
             debug,
             tokens: TokensController::new(api),
+            playback,
             modal: None,
             should_quit: false,
         })
@@ -256,6 +263,13 @@ impl App {
         &self.tokens
     }
 
+    /// The audio playback controller (drives the Messages/Questions playback
+    /// indicator).
+    #[must_use]
+    pub fn playback(&self) -> &PlaybackController {
+        &self.playback
+    }
+
     /// The active modal overlay, when one is open.
     #[must_use]
     pub fn modal(&self) -> Option<&Modal> {
@@ -288,6 +302,7 @@ impl App {
                     self.drain_debug_actions();
                     self.tokens.tick(self.screen == Screen::Tokens);
                     self.drain_token_actions();
+                    self.drain_playback();
                     self.toasts.prune();
                 }
                 AppEvent::Key(key) => self.on_key(key),
@@ -359,6 +374,19 @@ impl App {
             }
             KeyCode::Char('n' | 'N') if self.screen == Screen::Questions => {
                 self.open_new_question_prompt();
+            }
+            KeyCode::Char('p' | 'P')
+                if matches!(self.screen, Screen::Messages | Screen::Questions) =>
+            {
+                self.play_selected_audio();
+            }
+            KeyCode::Char(' ') if matches!(self.screen, Screen::Messages | Screen::Questions) => {
+                self.toggle_playback();
+            }
+            KeyCode::Char('s' | 'S')
+                if matches!(self.screen, Screen::Messages | Screen::Questions) =>
+            {
+                self.stop_playback();
             }
             KeyCode::Char('n' | 'N') if self.screen == Screen::Tokens => {
                 self.open_new_token_prompt();
@@ -625,6 +653,71 @@ impl App {
             } else {
                 self.toasts.error(outcome.message);
             }
+        }
+    }
+
+    /// Surface the outcome of a finished audio fetch. The controller only emits
+    /// an outcome when a download or refresh fails, so this is error-only in
+    /// practice, but both arms are handled defensively.
+    fn drain_playback(&mut self) {
+        if let Some(outcome) = self.playback.drain() {
+            if outcome.ok {
+                self.toasts.info(outcome.message);
+            } else {
+                self.toasts.error(outcome.message);
+            }
+        }
+    }
+
+    /// Start playback of the audio attached to the currently selected message or
+    /// question. No-ops with a toast when audio output is unavailable, a fetch
+    /// is already in flight, or nothing is selected.
+    fn play_selected_audio(&mut self) {
+        if !self.playback.is_available() {
+            let reason = self
+                .playback
+                .unavailable_reason()
+                .unwrap_or("audio output is unavailable")
+                .to_string();
+            self.toasts.warn(format!("Cannot play audio: {reason}"));
+            return;
+        }
+        if self.playback.is_loading() {
+            self.toasts.info("Audio is already loading.");
+            return;
+        }
+        match self.screen {
+            Screen::Messages => {
+                if let Some(message) = self.messages.selected_message().cloned() {
+                    self.playback.play_message(&message);
+                    self.toasts.info("Loading message audio…");
+                } else {
+                    self.toasts.info("Select a message to play its audio.");
+                }
+            }
+            Screen::Questions => {
+                if let Some(question) = self.questions.selected_question().cloned() {
+                    self.playback.play_question(&question);
+                    self.toasts.info("Loading question audio…");
+                } else {
+                    self.toasts.info("Select a question to play its audio.");
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Toggle between paused and playing for any in-progress playback.
+    fn toggle_playback(&self) {
+        if self.playback.is_available() {
+            self.playback.toggle_pause();
+        }
+    }
+
+    /// Stop any in-progress playback and clear the player queue.
+    fn stop_playback(&self) {
+        if self.playback.is_available() {
+            self.playback.stop();
         }
     }
 

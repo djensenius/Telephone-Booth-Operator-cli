@@ -13,10 +13,12 @@ use ratatui::widgets::{
     Axis, Block, Chart, Dataset, Gauge, GraphType, List, ListItem, ListState, Paragraph, Wrap,
 };
 use serde_json::Value;
+use std::time::Duration;
 use std::time::Instant;
 use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
 
+use tbo_audio::PlaybackStatus;
 use tbo_booth_client::{GpioPinSnapshot, LogEntry};
 use tbo_core::domain::{
     ApiToken, ApiTokenCreated, ApiTokenUsageBucket, BoothEventRecord, BoothEventType, BoothState,
@@ -238,6 +240,8 @@ fn render_messages(app: &App, frame: &mut Frame, area: Rect) {
             render_message_list(frame, columns[0], theme, value, controller.selected_index());
 
             let mut detail = message_detail_lines(theme, controller.selected_message());
+            detail.push(Line::raw(""));
+            detail.extend(playback_lines(app, theme));
             detail.push(Line::raw(""));
             if controller.is_refreshing() {
                 detail.push(note_line(theme, "Refreshing…".to_owned()));
@@ -531,6 +535,8 @@ fn render_questions(app: &App, frame: &mut Frame, area: Rect) {
 
             let mut detail = question_detail_lines(theme, controller.selected_question());
             detail.push(Line::raw(""));
+            detail.extend(playback_lines(app, theme));
+            detail.push(Line::raw(""));
             if controller.is_refreshing() {
                 detail.push(note_line(theme, "Refreshing…".to_owned()));
             } else {
@@ -665,6 +671,72 @@ fn format_duration(duration_ms: i64) -> String {
     } else {
         format!("{seconds}.{millis:03}s")
     }
+}
+
+/// Build the playback-status lines shown under the Messages and Questions
+/// detail panes: availability, loading, the current transport status, and the
+/// elapsed/total position when a track is loaded.
+fn playback_lines(app: &App, theme: &Theme) -> Vec<Line<'static>> {
+    let playback = app.playback();
+    let mut lines = vec![subheader(theme, "Playback")];
+
+    if !playback.is_available() {
+        let reason = playback
+            .unavailable_reason()
+            .unwrap_or("audio output is unavailable");
+        lines.push(note_line(theme, format!("Unavailable: {reason}")));
+        return lines;
+    }
+
+    if playback.is_loading() {
+        lines.push(note_line(theme, "Loading audio…".to_owned()));
+        return lines;
+    }
+
+    let Some(state) = playback.snapshot() else {
+        lines.push(hint_line(theme, "Press p to play the selected audio."));
+        return lines;
+    };
+
+    let (label, color) = match state.status() {
+        PlaybackStatus::Idle => ("idle", theme.dim),
+        PlaybackStatus::Playing => ("playing", theme.ok),
+        PlaybackStatus::Paused => ("paused", theme.warn),
+        PlaybackStatus::Ended => ("ended", theme.dim),
+    };
+    let position = duration_to_ms(state.position());
+    let progress = state.total().map_or_else(
+        || format_duration(position),
+        |total| {
+            format!(
+                "{} / {}",
+                format_duration(position),
+                format_duration(duration_to_ms(total))
+            )
+        },
+    );
+    lines.push(Line::from(vec![
+        Span::styled("Status:   ", Style::new().fg(theme.dim)),
+        badge(label, color),
+        Span::raw("  "),
+        Span::styled(progress, Style::new().fg(theme.fg)),
+    ]));
+    if let Some(error) = state.error() {
+        lines.push(Line::from(Span::styled(
+            format!("Error: {error}"),
+            Style::new().fg(theme.error),
+        )));
+    }
+    if matches!(state.status(), PlaybackStatus::Idle | PlaybackStatus::Ended) {
+        lines.push(hint_line(theme, "Press p to play the selected audio."));
+    }
+    lines
+}
+
+/// Convert a [`Duration`] to whole milliseconds as an `i64`, saturating rather
+/// than wrapping for absurdly long inputs.
+fn duration_to_ms(duration: Duration) -> i64 {
+    i64::try_from(duration.as_millis()).unwrap_or(i64::MAX)
 }
 
 /// Render the Tokens screen: a master list beside a detail pane that reveals a

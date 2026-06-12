@@ -575,6 +575,19 @@ impl<T: WriteTransport, A: TokenProvider> OperatorClient<T, A> {
         }
     }
 
+    /// Download the raw bytes of an audio blob from a (short-lived) SAS `url`.
+    ///
+    /// No bearer is sent: the SAS token embedded in the URL is the credential.
+    /// Read SAS URLs are short-lived, so callers should fetch a fresh one (e.g.
+    /// by re-fetching the owning message) just before downloading.
+    ///
+    /// # Errors
+    /// Returns an HTTP/transport error when the blob cannot be fetched (e.g. the
+    /// SAS token expired).
+    pub async fn download_audio(&self, url: &str) -> Result<Vec<u8>> {
+        self.transport.get_bytes(url).await
+    }
+
     /// Resolve the bearer token, failing fast when signed out.
     async fn require_bearer(&self) -> Result<String> {
         self.auth
@@ -802,6 +815,15 @@ mod tests {
                 None,
                 Some(&body.len().to_string()),
             )
+        }
+
+        async fn get_bytes(&self, url: &str) -> Result<Vec<u8>> {
+            let response = self.record("GET_BYTES", url, &[], None, None)?;
+            if response.is_success() {
+                Ok(response.body.into_bytes())
+            } else {
+                Err(status_error(response))
+            }
         }
     }
 
