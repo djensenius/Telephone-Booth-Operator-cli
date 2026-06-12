@@ -1,0 +1,237 @@
+//! Screen routing and Phase-0 placeholder rendering.
+//!
+//! Each [`Screen`] becomes a fully interactive view in later phases; for now
+//! every screen renders a titled placeholder describing what it will show, so
+//! the navigation chrome can be exercised end to end.
+
+use ratatui::Frame;
+use ratatui::layout::Rect;
+use ratatui::style::{Modifier, Style};
+use ratatui::text::{Line, Span};
+use ratatui::widgets::{Block, Paragraph, Wrap};
+
+use crate::app::App;
+
+/// The set of top-level screens, in tab order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Screen {
+    /// Booth status and runtime mode.
+    Status,
+    /// Voicemail messages.
+    Messages,
+    /// Question prompts.
+    Questions,
+    /// Event log.
+    Events,
+    /// Call sessions.
+    Sessions,
+    /// Aggregate statistics.
+    Stats,
+    /// Operator-reported system readouts.
+    LiveSystem,
+    /// btm-style charts from the booth `/metrics`.
+    SystemHealth,
+    /// On-device debug panel.
+    Debug,
+    /// API tokens.
+    Tokens,
+    /// Settings, identity, and about.
+    Settings,
+}
+
+/// All screens in display/tab order.
+const ALL: [Screen; 11] = [
+    Screen::Status,
+    Screen::Messages,
+    Screen::Questions,
+    Screen::Events,
+    Screen::Sessions,
+    Screen::Stats,
+    Screen::LiveSystem,
+    Screen::SystemHealth,
+    Screen::Debug,
+    Screen::Tokens,
+    Screen::Settings,
+];
+
+impl Screen {
+    /// All screens in tab order.
+    #[must_use]
+    pub fn all() -> &'static [Screen] {
+        &ALL
+    }
+
+    /// The position of this screen in tab order.
+    #[must_use]
+    pub fn index(self) -> usize {
+        ALL.iter().position(|s| *s == self).unwrap_or(0)
+    }
+
+    /// The screen at `index`, if any.
+    #[must_use]
+    pub fn from_index(index: usize) -> Option<Screen> {
+        ALL.get(index).copied()
+    }
+
+    /// The next screen, wrapping around.
+    #[must_use]
+    pub fn next(self) -> Screen {
+        let index = (self.index() + 1) % ALL.len();
+        ALL[index]
+    }
+
+    /// The previous screen, wrapping around.
+    #[must_use]
+    pub fn prev(self) -> Screen {
+        let index = (self.index() + ALL.len() - 1) % ALL.len();
+        ALL[index]
+    }
+
+    /// Full screen title.
+    #[must_use]
+    pub fn title(self) -> &'static str {
+        match self {
+            Screen::Status => "Status",
+            Screen::Messages => "Messages",
+            Screen::Questions => "Questions",
+            Screen::Events => "Events",
+            Screen::Sessions => "Sessions",
+            Screen::Stats => "Statistics",
+            Screen::LiveSystem => "Live System",
+            Screen::SystemHealth => "System Health",
+            Screen::Debug => "Debug",
+            Screen::Tokens => "API Tokens",
+            Screen::Settings => "Settings",
+        }
+    }
+
+    /// Short label used in the tab bar.
+    #[must_use]
+    pub fn short(self) -> &'static str {
+        match self {
+            Screen::Status => "Status",
+            Screen::Messages => "Messages",
+            Screen::Questions => "Questions",
+            Screen::Events => "Events",
+            Screen::Sessions => "Sessions",
+            Screen::Stats => "Stats",
+            Screen::LiveSystem => "LiveSys",
+            Screen::SystemHealth => "Health",
+            Screen::Debug => "Debug",
+            Screen::Tokens => "Tokens",
+            Screen::Settings => "Settings",
+        }
+    }
+
+    /// A one-line description of the screen's eventual contents.
+    #[must_use]
+    pub fn description(self) -> &'static str {
+        match self {
+            Screen::Status => {
+                "Booth state, runtime mode, last error, and state-transition history."
+            }
+            Screen::Messages => {
+                "Voicemail messages: transcription, moderation, translation, and playback."
+            }
+            Screen::Questions => {
+                "Question prompts: activate/deactivate, archive, create, and playback."
+            }
+            Screen::Events => "Live event log with filtering and a real-time tail (SSE).",
+            Screen::Sessions => {
+                "Call sessions with per-call timelines, outcomes, digits, and duration."
+            }
+            Screen::Stats => {
+                "Aggregate statistics: calls, messages, uploads, top questions, busiest hours."
+            }
+            Screen::LiveSystem => {
+                "Operator-reported readouts: CPU, memory, disk, network, and uptime."
+            }
+            Screen::SystemHealth => {
+                "btm-style live charts scraped from the booth's Prometheus /metrics endpoint."
+            }
+            Screen::Debug => {
+                "On-device debug panel: state, GPIO, audio meters, logs, config, and simulate."
+            }
+            Screen::Tokens => "API tokens: list, create (shown once), revoke, and usage.",
+            Screen::Settings => {
+                "Operator URL, OIDC issuer, configured booths, theme, and identity."
+            }
+        }
+    }
+}
+
+/// Render the body for the active screen.
+pub fn render(app: &App, frame: &mut Frame, area: Rect) {
+    let theme = app.theme();
+    let screen = app.screen();
+
+    let mut lines = vec![
+        Line::from(Span::styled(
+            screen.title(),
+            Style::new().fg(theme.accent).add_modifier(Modifier::BOLD),
+        )),
+        Line::raw(""),
+        Line::raw(screen.description()),
+    ];
+
+    if screen == Screen::Settings {
+        let config = app.config();
+        lines.push(Line::raw(""));
+        lines.push(Line::from(vec![
+            Span::styled("Operator API: ", Style::new().fg(theme.dim)),
+            Span::raw(config.operator.base_url.clone()),
+        ]));
+        lines.push(Line::from(vec![
+            Span::styled("OIDC issuer:  ", Style::new().fg(theme.dim)),
+            Span::raw(config.auth.issuer.clone()),
+        ]));
+        lines.push(Line::from(vec![
+            Span::styled("Booths:       ", Style::new().fg(theme.dim)),
+            Span::raw(config.booths.len().to_string()),
+        ]));
+    }
+
+    lines.push(Line::raw(""));
+    lines.push(Line::from(Span::styled(
+        "Coming soon.",
+        Style::new().fg(theme.dim).add_modifier(Modifier::ITALIC),
+    )));
+
+    let block = Block::bordered()
+        .border_style(Style::new().fg(theme.dim))
+        .title(format!(" {} ", screen.title()));
+    let paragraph = Paragraph::new(lines).block(block).wrap(Wrap { trim: true });
+    frame.render_widget(paragraph, area);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Screen;
+
+    #[test]
+    fn index_round_trips_for_every_screen() {
+        for (index, screen) in Screen::all().iter().enumerate() {
+            assert_eq!(screen.index(), index);
+            assert_eq!(Screen::from_index(index), Some(*screen));
+        }
+        assert_eq!(Screen::from_index(Screen::all().len()), None);
+    }
+
+    #[test]
+    fn next_and_prev_wrap_around() {
+        let first = Screen::all()[0];
+        let last = Screen::all()[Screen::all().len() - 1];
+        assert_eq!(first.prev(), last);
+        assert_eq!(last.next(), first);
+        assert_eq!(first.next().prev(), first);
+    }
+
+    #[test]
+    fn labels_are_non_empty() {
+        for screen in Screen::all() {
+            assert!(!screen.title().is_empty());
+            assert!(!screen.short().is_empty());
+            assert!(!screen.description().is_empty());
+        }
+    }
+}

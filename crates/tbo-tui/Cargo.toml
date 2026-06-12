@@ -19,6 +19,17 @@ path = "src/main.rs"
 workspace = true
 
 [dependencies]
+tbo-core = { workspace = true }
+ratatui = { workspace = true }
+crossterm = { workspace = true }
+tokio = { workspace = true }
+futures = { workspace = true }
+clap = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+tracing-appender = { workspace = true }
+directories = { workspace = true }
 
 [package.metadata.deb]
 name = "telephone-booth-operator-cli"
