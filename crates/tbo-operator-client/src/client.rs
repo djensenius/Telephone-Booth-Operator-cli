@@ -12,8 +12,9 @@ use futures::stream::{BoxStream, Stream, StreamExt};
 use tbo_core::domain::{
     BoothEventList, BoothEventRecord, BoothStatus, BoothSystemSnapshotList, CallSessionDetail,
     CallSessionList, Message, MessageDecision, MessageDecisionKind, MessageList, MessageStatus,
-    Moderation, OperatorMe, QuestionList, QuestionStatus, StatsOverview, StatsWindow,
-    StatusHistory, Transcription, TranscriptionList, TranslationSubmit,
+    Moderation, OperatorMe, Question, QuestionCreate, QuestionList, QuestionStatus, StatsOverview,
+    StatsWindow, StatusHistory, Transcription, TranscriptionList, TranslationSubmit, UploadSasKind,
+    UploadSasRequest, UploadSlot,
 };
 
 use crate::error::{OperatorError, Result};
@@ -373,6 +374,135 @@ impl<T: WriteTransport, A: TokenProvider> OperatorClient<T, A> {
         self.delete_no_content(&format!("/v1/messages/{id}")).await
     }
 
+    /// Publish a question so callers can be offered it, clearing any prior
+    /// retirement (`POST /v1/questions/{id}/activate`).
+    ///
+    /// Returns the updated [`Question`].
+    ///
+    /// # Errors
+    /// Returns [`OperatorError::Unauthenticated`] when signed out,
+    /// [`OperatorError::NotFound`] for an unknown id, or an HTTP/transport
+    /// error.
+    pub async fn activate_question(&self, id: &str) -> Result<Question> {
+        self.post_empty(&format!("/v1/questions/{id}/activate"))
+            .await
+    }
+
+    /// Return a question to `draft` so it is no longer offered to callers
+    /// (`POST /v1/questions/{id}/deactivate`).
+    ///
+    /// Returns the updated [`Question`].
+    ///
+    /// # Errors
+    /// Returns [`OperatorError::Unauthenticated`] when signed out,
+    /// [`OperatorError::NotFound`] for an unknown id, or an HTTP/transport
+    /// error.
+    pub async fn deactivate_question(&self, id: &str) -> Result<Question> {
+        self.post_empty(&format!("/v1/questions/{id}/deactivate"))
+            .await
+    }
+
+    /// Archive (soft-delete) a question (`DELETE /v1/questions/{id}`).
+    ///
+    /// The booth stops offering the prompt, but existing messages are kept.
+    ///
+    /// # Errors
+    /// Returns [`OperatorError::Unauthenticated`] when signed out,
+    /// [`OperatorError::NotFound`] for an unknown or already-archived id, or an
+    /// HTTP/transport error.
+    pub async fn archive_question(&self, id: &str) -> Result<()> {
+        self.delete_no_content(&format!("/v1/questions/{id}")).await
+    }
+
+    /// Create a question referencing a previously uploaded audio file
+    /// (`POST /v1/questions`).
+    ///
+    /// New questions default to `draft` server-side unless `status` is set.
+    /// Returns the created [`Question`] (server status `201`).
+    ///
+    /// # Errors
+    /// Returns [`OperatorError::Unauthenticated`] when signed out,
+    /// [`OperatorError::NotFound`] when the audio file id is unknown, or an
+    /// HTTP/transport error (the server replies `409` on a conflict).
+    pub async fn create_question(
+        &self,
+        prompt: String,
+        audio_file_id: String,
+        status: Option<QuestionStatus>,
+    ) -> Result<Question> {
+        let body = QuestionCreate {
+            prompt,
+            audio_file_id,
+            status,
+        };
+        self.post_json("/v1/questions", &body).await
+    }
+
+    /// Reserve a short-lived Azure blob SAS upload slot
+    /// (`POST /v1/uploads/sas`).
+    ///
+    /// For [`UploadSasKind::QuestionAudio`] the returned [`UploadSlot`] carries
+    /// the `audio_file_id` to reference when creating the question.
+    ///
+    /// # Errors
+    /// Returns [`OperatorError::Unauthenticated`] when signed out, or an
+    /// HTTP/transport error.
+    pub async fn request_upload_slot(&self, request: &UploadSasRequest) -> Result<UploadSlot> {
+        self.post_json("/v1/uploads/sas", request).await
+    }
+
+    /// Upload FLAC `audio` bytes to a question-audio blob slot, then create the
+    /// question that references them.
+    ///
+    /// Performs the full three-step flow the web and mobile clients use:
+    /// reserve a SAS slot for the bytes' SHA-256, `PUT` the bytes to the slot's
+    /// URL, then `POST /v1/questions` with the slot's `audio_file_id`. New
+    /// questions default to `draft` server-side unless `status` is set.
+    ///
+    /// # Errors
+    /// Returns [`OperatorError::Unauthenticated`] when signed out,
+    /// [`OperatorError::InvalidRequest`] when the SAS slot lacks an audio file
+    /// id, or an HTTP/transport error from any step.
+    pub async fn create_question_with_audio(
+        &self,
+        prompt: String,
+        audio: Vec<u8>,
+        status: Option<QuestionStatus>,
+    ) -> Result<Question> {
+        let sha256 = sha256_hex(&audio);
+        let size_bytes = audio.len() as u64;
+        let slot = self
+            .request_upload_slot(&UploadSasRequest {
+                kind: UploadSasKind::QuestionAudio,
+                sha256,
+                size_bytes,
+                content_type: FLAC_CONTENT_TYPE.to_owned(),
+            })
+            .await?;
+        let audio_file_id = slot.audio_file_id.ok_or_else(|| {
+            OperatorError::InvalidRequest("upload slot did not include an audio file id".to_owned())
+        })?;
+        self.upload_audio_blob(&slot.upload_url, audio).await?;
+        self.create_question(prompt, audio_file_id, status).await
+    }
+
+    /// `PUT` raw FLAC bytes to a blob SAS `url` (no bearer; the URL's SAS token
+    /// is the credential).
+    ///
+    /// # Errors
+    /// Returns an HTTP/transport error when the upload is rejected.
+    async fn upload_audio_blob(&self, url: &str, audio: Vec<u8>) -> Result<()> {
+        let response = self
+            .transport
+            .put_bytes(url, FLAC_CONTENT_TYPE, audio)
+            .await?;
+        if response.is_success() {
+            Ok(())
+        } else {
+            Err(status_error(response))
+        }
+    }
+
     /// Resolve the bearer token, failing fast when signed out.
     async fn require_bearer(&self) -> Result<String> {
         self.auth
@@ -423,6 +553,15 @@ fn decode_success<R: DeserializeOwned>(response: HttpResponse) -> Result<R> {
     } else {
         Err(status_error(response))
     }
+}
+
+/// The fixed content type for booth audio uploads.
+const FLAC_CONTENT_TYPE: &str = "audio/flac";
+
+/// Lower-case hex SHA-256 of `bytes`, as the upload SAS endpoint expects.
+fn sha256_hex(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    hex::encode(Sha256::digest(bytes))
 }
 
 /// A boxed stream of live [`BoothEventRecord`]s from the operator event tail.
@@ -573,6 +712,24 @@ mod tests {
             bearer: Option<&str>,
         ) -> Result<HttpResponse> {
             self.record("DELETE", path, query, bearer, None)
+        }
+
+        async fn put_bytes(
+            &self,
+            url: &str,
+            content_type: &str,
+            body: Vec<u8>,
+        ) -> Result<HttpResponse> {
+            // Record the absolute URL as the path, the content type as a query
+            // pair, and the byte length as the body so assertions can inspect
+            // the upload without depending on the (binary) payload.
+            self.record(
+                "PUT",
+                url,
+                &[("content-type", content_type.to_owned())],
+                None,
+                Some(&body.len().to_string()),
+            )
         }
     }
 
@@ -880,6 +1037,124 @@ mod tests {
 
         assert!(matches!(err, OperatorError::Unauthenticated));
         assert!(transport.calls().is_empty());
+    }
+
+    fn question_body(id: &str, status: &str) -> String {
+        format!(
+            r#"{{"id":"{id}","prompt":"Prompt {id}","status":"{status}","createdAt":"2026-01-01T00:00:00Z","audio":{{"url":"https://example/{id}.flac","sha256":"{id}","durationMs":1000}}}}"#
+        )
+    }
+
+    #[tokio::test]
+    async fn activate_question_posts_without_body() {
+        let transport = FakeTransport::with_responses(vec![ok(&question_body("q1", "active"))]);
+        let client = authed(transport.clone());
+
+        let question = client.activate_question("q1").await.unwrap();
+
+        assert_eq!(question.status, QuestionStatus::Active);
+        let calls = transport.calls();
+        assert_eq!(calls[0].method, "POST");
+        assert_eq!(calls[0].path, "/v1/questions/q1/activate");
+        assert_eq!(calls[0].bearer.as_deref(), Some("token-123"));
+        assert!(calls[0].body.is_none());
+    }
+
+    #[tokio::test]
+    async fn deactivate_question_posts_without_body() {
+        let transport = FakeTransport::with_responses(vec![ok(&question_body("q1", "draft"))]);
+        let client = authed(transport.clone());
+
+        let question = client.deactivate_question("q1").await.unwrap();
+
+        assert_eq!(question.status, QuestionStatus::Draft);
+        let calls = transport.calls();
+        assert_eq!(calls[0].method, "POST");
+        assert_eq!(calls[0].path, "/v1/questions/q1/deactivate");
+    }
+
+    #[tokio::test]
+    async fn archive_question_deletes_on_no_content() {
+        let transport = FakeTransport::with_responses(vec![HttpResponse {
+            status: 204,
+            body: String::new(),
+        }]);
+        let client = authed(transport.clone());
+
+        client.archive_question("q1").await.unwrap();
+
+        let calls = transport.calls();
+        assert_eq!(calls[0].method, "DELETE");
+        assert_eq!(calls[0].path, "/v1/questions/q1");
+    }
+
+    #[tokio::test]
+    async fn create_question_with_audio_runs_the_three_step_flow() {
+        let slot = r#"{"uploadUrl":"https://blob.example/c/q.flac?sig=abc","blobName":"questions/ab/q.flac","expiresAt":"2026-01-01T00:00:00Z","audioFileId":"file-1"}"#;
+        let transport = FakeTransport::with_responses(vec![
+            ok(slot),
+            HttpResponse {
+                status: 201,
+                body: String::new(),
+            },
+            HttpResponse {
+                status: 201,
+                body: question_body("q1", "draft"),
+            },
+        ]);
+        let client = authed(transport.clone());
+
+        let question = client
+            .create_question_with_audio("New prompt?".to_owned(), b"flac-bytes".to_vec(), None)
+            .await
+            .unwrap();
+
+        assert_eq!(question.id, "q1");
+        let calls = transport.calls();
+        assert_eq!(calls.len(), 3);
+
+        // 1. Reserve a SAS slot for the bytes.
+        assert_eq!(calls[0].method, "POST");
+        assert_eq!(calls[0].path, "/v1/uploads/sas");
+        let sas: UploadSasRequest =
+            serde_json::from_str(calls[0].body.as_deref().unwrap()).unwrap();
+        assert_eq!(sas.kind, UploadSasKind::QuestionAudio);
+        assert_eq!(sas.size_bytes, 10);
+        assert_eq!(sas.content_type, "audio/flac");
+        assert_eq!(sas.sha256.len(), 64);
+        assert!(sas.sha256.bytes().all(|b| b.is_ascii_hexdigit()));
+
+        // 2. PUT the bytes to the (absolute) blob URL with no bearer.
+        assert_eq!(calls[1].method, "PUT");
+        assert_eq!(calls[1].path, "https://blob.example/c/q.flac?sig=abc");
+        assert!(calls[1].bearer.is_none());
+        assert_eq!(calls[1].body.as_deref(), Some("10"));
+
+        // 3. Create the question referencing the uploaded file.
+        assert_eq!(calls[2].method, "POST");
+        assert_eq!(calls[2].path, "/v1/questions");
+        let create: QuestionCreate =
+            serde_json::from_str(calls[2].body.as_deref().unwrap()).unwrap();
+        assert_eq!(create.prompt, "New prompt?");
+        assert_eq!(create.audio_file_id, "file-1");
+        assert!(create.status.is_none());
+    }
+
+    #[tokio::test]
+    async fn create_question_with_audio_errors_without_audio_file_id() {
+        // A `message`-kind slot omits the audio file id; the question flow must
+        // not proceed to an upload.
+        let slot = r#"{"uploadUrl":"https://blob.example/c/q.flac?sig=abc","blobName":"messages/ab/q.flac","expiresAt":"2026-01-01T00:00:00Z"}"#;
+        let transport = FakeTransport::with_responses(vec![ok(slot)]);
+        let client = authed(transport.clone());
+
+        let err = client
+            .create_question_with_audio("Hi?".to_owned(), b"x".to_vec(), None)
+            .await
+            .unwrap_err();
+
+        assert!(matches!(err, OperatorError::InvalidRequest(_)));
+        assert_eq!(transport.calls().len(), 1, "must stop before uploading");
     }
 
     /// An SSE transport that replays canned byte chunks and records the query.

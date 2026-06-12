@@ -210,6 +210,7 @@ impl App {
                     self.messages.tick(self.screen == Screen::Messages);
                     self.drain_message_actions();
                     self.questions.tick(self.screen == Screen::Questions);
+                    self.drain_question_actions();
                     self.sessions.tick(self.screen == Screen::Sessions);
                     self.events.tick(self.screen == Screen::Events);
                     self.stats.tick(self.screen == Screen::Stats);
@@ -272,6 +273,18 @@ impl App {
             KeyCode::Char('d' | 'D') if self.screen == Screen::Messages => {
                 self.open_delete_confirm();
             }
+            KeyCode::Char('a' | 'A') if self.screen == Screen::Questions => {
+                self.question_action(QuestionsController::activate_selected);
+            }
+            KeyCode::Char('e' | 'E') if self.screen == Screen::Questions => {
+                self.question_action(QuestionsController::deactivate_selected);
+            }
+            KeyCode::Char('d' | 'D') if self.screen == Screen::Questions => {
+                self.open_archive_confirm();
+            }
+            KeyCode::Char('n' | 'N') if self.screen == Screen::Questions => {
+                self.open_new_question_prompt();
+            }
             KeyCode::Char('l' | 'L') if self.screen == Screen::Settings => self.begin_login(),
             KeyCode::Char('o' | 'O') if self.screen == Screen::Settings => {
                 self.auth.sign_out(&mut self.toasts);
@@ -304,6 +317,21 @@ impl App {
             Intent::TranslateMessage => {
                 let text = modal.input().to_owned();
                 self.message_action(move |m| m.submit_translation(text));
+            }
+            Intent::ArchiveQuestion => self.question_action(QuestionsController::archive_selected),
+            Intent::NewQuestionPrompt => {
+                // First create step done; collect the audio path next, carrying
+                // the prompt text into the second prompt.
+                let prompt = modal.input().to_owned();
+                self.modal = Some(Modal::prompt(
+                    "New question",
+                    "FLAC file path",
+                    Intent::NewQuestionAudio { prompt },
+                ));
+            }
+            Intent::NewQuestionAudio { prompt } => {
+                let path = modal.input().to_owned();
+                self.start_question_create(prompt, path);
             }
         }
     }
@@ -355,6 +383,70 @@ impl App {
             if outcome.ok {
                 self.toasts.info(outcome.message);
                 self.messages.refresh();
+            } else {
+                self.toasts.error(outcome.message);
+            }
+        }
+    }
+
+    /// Run a question write action, guarding against overlapping requests and
+    /// nudging when there is nothing selected.
+    fn question_action(&mut self, action: impl FnOnce(&mut QuestionsController)) {
+        if self.questions.is_action_in_flight() {
+            self.toasts.warn("An action is already in progress.");
+            return;
+        }
+        if self.questions.selected_question().is_none() {
+            self.toasts.info("Select a question first.");
+            return;
+        }
+        action(&mut self.questions);
+    }
+
+    /// Open a confirmation modal for archiving the selected question.
+    fn open_archive_confirm(&mut self) {
+        if self.questions.selected_question().is_none() {
+            self.toasts.info("Select a question first.");
+            return;
+        }
+        self.modal = Some(Modal::confirm(
+            "Archive question",
+            "Retire the selected question? The booth will stop offering it, but existing messages stay on file.",
+            Intent::ArchiveQuestion,
+        ));
+    }
+
+    /// Open the first step of the new-question flow (the prompt text); the
+    /// second step collects the FLAC file path.
+    fn open_new_question_prompt(&mut self) {
+        if self.questions.is_action_in_flight() {
+            self.toasts.warn("An action is already in progress.");
+            return;
+        }
+        self.modal = Some(Modal::prompt(
+            "New question",
+            "Prompt text",
+            Intent::NewQuestionPrompt,
+        ));
+    }
+
+    /// Kick off a question create from collected prompt text and audio path,
+    /// guarding against overlapping requests.
+    fn start_question_create(&mut self, prompt: String, audio_path: String) {
+        if self.questions.is_action_in_flight() {
+            self.toasts.warn("An action is already in progress.");
+            return;
+        }
+        self.questions.create_question(prompt, audio_path);
+    }
+
+    /// Surface completed question-action outcomes as toasts, reloading the list
+    /// after a successful change.
+    fn drain_question_actions(&mut self) {
+        for outcome in self.questions.drain_actions() {
+            if outcome.ok {
+                self.toasts.info(outcome.message);
+                self.questions.refresh();
             } else {
                 self.toasts.error(outcome.message);
             }

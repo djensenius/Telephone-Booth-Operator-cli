@@ -91,7 +91,9 @@ fn status_hints(app: &App) -> &'static str {
         Screen::Messages => {
             "  ↑/↓ select | a approve | x reject | t transcribe | m moderate | g translate | d delete | r reload | q quit"
         }
-        Screen::Questions => "  ↑/↓ select | r reload | Tab/Right next | 1-9 jump | q quit",
+        Screen::Questions => {
+            "  ↑/↓ select | a activate | e deactivate | d archive | n new | r reload | q quit"
+        }
         Screen::Sessions => "  ↑/↓ select | r reload | Tab/Right next | 1-9 jump | q quit",
         Screen::Events => "  ↑/↓ select | r reload | f follow | Tab/Right next | q quit",
         Screen::Stats => "  r reload | w window | Tab/Right next | 1-9 jump | q quit",

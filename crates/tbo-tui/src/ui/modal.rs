@@ -8,12 +8,22 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 /// The operator action a modal performs when confirmed.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Intent {
     /// Permanently delete the selected message.
     DeleteMessage,
     /// Submit the prompt's text as a translation for the selected message.
     TranslateMessage,
+    /// Archive (retire) the selected question.
+    ArchiveQuestion,
+    /// Collect the prompt text for a new question (first create step).
+    NewQuestionPrompt,
+    /// Collect the FLAC file path for a new question and create it, carrying
+    /// the prompt text entered in the first step.
+    NewQuestionAudio {
+        /// The prompt text gathered by the preceding [`Intent::NewQuestionPrompt`] step.
+        prompt: String,
+    },
 }
 
 /// What the app should do after routing a key to the active modal.
@@ -85,8 +95,8 @@ impl Modal {
     #[must_use]
     pub fn intent(&self) -> Intent {
         match self {
-            Self::Confirm(modal) => modal.intent,
-            Self::Prompt(modal) => modal.intent,
+            Self::Confirm(modal) => modal.intent.clone(),
+            Self::Prompt(modal) => modal.intent.clone(),
         }
     }
 
