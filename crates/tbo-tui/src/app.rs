@@ -1,10 +1,14 @@
 //! Application state and the main event loop.
 
+use std::sync::Arc;
+
 use anyhow::Result;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use tbo_auth::{InMemoryTokenStore, KeyringTokenStore, SessionManager, TokenStore};
 use tbo_core::config::Config;
 use tokio::time::Duration;
 
+use crate::auth::{AuthController, AuthPhase};
 use crate::event::{AppEvent, EventLoop};
 use crate::tui::Tui;
 use crate::ui;
@@ -21,26 +25,63 @@ pub struct App {
     theme: Theme,
     screen: Screen,
     toasts: Toasts,
+    auth: AuthController,
     should_quit: bool,
 }
 
 impl App {
     /// Build the application from a loaded configuration.
-    #[must_use]
-    pub fn new(config: Config) -> Self {
+    ///
+    /// # Errors
+    /// Returns an error if the authentication client or session store cannot be
+    /// initialized.
+    pub fn new(config: Config) -> Result<Self> {
         let theme = Theme::from_name(&config.ui.theme);
         let mut toasts = Toasts::default();
         toasts.info("Welcome to tb-operator. Press q to quit.");
         if config.booths.is_empty() {
             toasts.warn("No booths configured; add one in Settings to use System Health.");
         }
-        Self {
+
+        let auth = Self::build_auth(&config, &mut toasts)?;
+        match auth.phase() {
+            AuthPhase::SignedIn { .. } => toasts.info("Signed in to the operator API."),
+            _ => toasts.warn("Not signed in. Open Settings and press L to log in."),
+        }
+
+        Ok(Self {
             config,
             theme,
             screen: Screen::Status,
             toasts,
+            auth,
             should_quit: false,
+        })
+    }
+
+    /// Build the auth controller, preferring the OS keychain and falling back
+    /// to an ephemeral in-memory store if secure storage is unavailable (e.g.
+    /// no secret service on a headless host, or a locked keychain).
+    fn build_auth(config: &Config, toasts: &mut Toasts) -> Result<AuthController> {
+        match Self::keyring_auth(config) {
+            Ok(auth) => Ok(auth),
+            Err(err) => {
+                toasts.warn(format!(
+                    "Secure storage unavailable ({err}); using an in-memory session this run."
+                ));
+                let store: Box<dyn TokenStore> = Box::new(InMemoryTokenStore::new());
+                let manager = SessionManager::new(&config.auth, store)?;
+                Ok(AuthController::new(Arc::new(manager))?)
+            }
         }
+    }
+
+    /// Build a keychain-backed auth controller, surfacing any keychain
+    /// construction or initial-load error to the caller.
+    fn keyring_auth(config: &Config) -> Result<AuthController> {
+        let store: Box<dyn TokenStore> = Box::new(KeyringTokenStore::new()?);
+        let manager = SessionManager::new(&config.auth, store)?;
+        Ok(AuthController::new(Arc::new(manager))?)
     }
 
     /// The active configuration.
@@ -67,13 +108,22 @@ impl App {
         &self.toasts
     }
 
+    /// The authentication controller (drives the login UI).
+    #[must_use]
+    pub fn auth(&self) -> &AuthController {
+        &self.auth
+    }
+
     /// Run the draw/event loop until the user quits.
     pub async fn run(mut self, terminal: &mut Tui) -> Result<()> {
         let mut events = EventLoop::new(TICK);
         while !self.should_quit {
             terminal.draw(|frame| ui::render(&self, frame))?;
             match events.next().await {
-                AppEvent::Tick => self.toasts.prune(),
+                AppEvent::Tick => {
+                    self.auth.drain(&mut self.toasts);
+                    self.toasts.prune();
+                }
                 AppEvent::Key(key) => self.on_key(key),
                 AppEvent::Resize => {}
                 AppEvent::Error(message) => self.toasts.error(format!("input error: {message}")),
@@ -89,11 +139,35 @@ impl App {
             return;
         }
         match key.code {
-            KeyCode::Char('q') | KeyCode::Esc => self.should_quit = true,
+            KeyCode::Char('q') => self.should_quit = true,
+            KeyCode::Esc => {
+                if self.auth.is_in_progress() {
+                    self.auth.cancel();
+                    self.toasts.info("Login cancelled.");
+                } else {
+                    self.should_quit = true;
+                }
+            }
             KeyCode::Tab | KeyCode::Right => self.screen = self.screen.next(),
             KeyCode::BackTab | KeyCode::Left => self.screen = self.screen.prev(),
+            KeyCode::Char('l' | 'L') if self.screen == Screen::Settings => self.begin_login(),
+            KeyCode::Char('o' | 'O') if self.screen == Screen::Settings => {
+                self.auth.sign_out(&mut self.toasts);
+            }
             KeyCode::Char(c) if c.is_ascii_digit() && c != '0' => self.jump_to_digit(c),
             _ => {}
+        }
+    }
+
+    /// Start a device-code login, nudging the user when it is a no-op.
+    fn begin_login(&mut self) {
+        match self.auth.phase() {
+            AuthPhase::SignedIn { .. } => {
+                self.toasts
+                    .info("Already signed in; press O to sign out first.");
+            }
+            AuthPhase::Starting | AuthPhase::AwaitingApproval(_) => {}
+            _ => self.auth.start_login(),
         }
     }
 

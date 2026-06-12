@@ -61,12 +61,22 @@ fn render_status_bar(app: &App, frame: &mut Frame, area: Rect) {
             .bg(theme.bg)
             .add_modifier(Modifier::BOLD),
     );
-    let hints = Span::styled(
-        "  Tab/Right next | Shift-Tab/Left prev | 1-9 jump | q quit",
-        Style::new().fg(theme.dim),
-    );
+    let hints = Span::styled(status_hints(app), Style::new().fg(theme.dim));
     let line = Line::from(vec![ready, pill, hints]);
     frame.render_widget(Paragraph::new(line), area);
+}
+
+/// Context-sensitive help text for the status bar.
+fn status_hints(app: &App) -> &'static str {
+    // A login can be cancelled from any screen, so surface the hint whenever
+    // one is in progress regardless of the focused screen.
+    if app.auth().is_in_progress() {
+        return "  Esc cancel login | Tab/Right next | 1-9 jump | q quit";
+    }
+    if app.screen() == Screen::Settings {
+        return "  L log in | O sign out | Tab/Right next | 1-9 jump | q quit";
+    }
+    "  Tab/Right next | Shift-Tab/Left prev | 1-9 jump | q quit"
 }
 
 /// Render the toast overlay anchored to the bottom-right of `area`.

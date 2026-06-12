@@ -8,10 +8,12 @@
 //! - [`logging`]: file-based tracing setup.
 //! - [`tui`]: terminal init/restore and the panic hook.
 //! - [`event`]: the async input/tick event source.
+//! - [`auth`]: interactive Authentik device-code login.
 //! - [`app`]: application state and the main loop.
 //! - [`ui`]: rendering (tab bar, screens, status bar, toasts, theme).
 
 mod app;
+mod auth;
 mod cli;
 mod event;
 mod logging;
@@ -35,8 +37,12 @@ async fn main() -> Result<()> {
 
     let _log_guard = logging::init();
 
+    // Build the app (and its auth/session state) before taking over the
+    // terminal, so a setup failure surfaces as a normal error.
+    let app = App::new(config)?;
+
     let mut terminal = tui::init()?;
-    let result = App::new(config).run(&mut terminal).await;
+    let result = app.run(&mut terminal).await;
     tui::restore()?;
     result
 }
