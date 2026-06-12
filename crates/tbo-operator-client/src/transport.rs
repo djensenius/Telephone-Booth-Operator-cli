@@ -92,6 +92,21 @@ pub trait WriteTransport: HttpTransport {
         query: &[(&str, String)],
         bearer: Option<&str>,
     ) -> impl Future<Output = Result<HttpResponse>> + Send;
+
+    /// Issue a raw `PUT` of `body` bytes to an absolute `url` (e.g. an Azure
+    /// blob SAS URL), sending `content_type` and the block-blob header the
+    /// storage backend requires.
+    ///
+    /// Unlike [`post`](WriteTransport::post)/[`delete`](WriteTransport::delete)
+    /// the `url` is **not** joined to the operator base URL and **no** bearer
+    /// token is sent: the short-lived SAS token embedded in the URL is the only
+    /// credential. Used by the question-audio upload step.
+    fn put_bytes(
+        &self,
+        url: &str,
+        content_type: &str,
+        body: Vec<u8>,
+    ) -> impl Future<Output = Result<HttpResponse>> + Send;
 }
 
 /// A [`reqwest`]-backed transport using rustls.
@@ -222,6 +237,21 @@ impl WriteTransport for ReqwestTransport {
         if let Some(token) = bearer {
             request = request.bearer_auth(token);
         }
+        send_text(request).await
+    }
+
+    async fn put_bytes(
+        &self,
+        url: &str,
+        content_type: &str,
+        body: Vec<u8>,
+    ) -> Result<HttpResponse> {
+        let request = self
+            .client
+            .put(url)
+            .header("x-ms-blob-type", "BlockBlob")
+            .header(reqwest::header::CONTENT_TYPE, content_type)
+            .body(body);
         send_text(request).await
     }
 }

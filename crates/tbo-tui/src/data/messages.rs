@@ -13,19 +13,10 @@ use tbo_operator_client::{
     HttpTransport, OperatorClient, ReqwestTransport, TokenProvider, WriteTransport,
 };
 
-use crate::data::{Remote, SessionTokenProvider};
+use crate::data::{ActionOutcome, Remote, SessionTokenProvider};
 
 /// How many messages to request per load.
 const PAGE_LIMIT: u32 = 50;
-
-/// The result of a completed write action, surfaced by the app as a toast.
-#[derive(Debug, Clone)]
-pub struct ActionOutcome {
-    /// Human-readable summary of the outcome.
-    pub message: String,
-    /// Whether the action succeeded (the app reloads the list on success).
-    pub ok: bool,
-}
 
 /// Loads the message list off the UI thread and tracks the selected row.
 ///
@@ -410,6 +401,15 @@ mod tests {
             _path: &str,
             _query: &[(&str, String)],
             _bearer: Option<&str>,
+        ) -> Result<HttpResponse> {
+            Ok(self.write_response.lock().unwrap().clone())
+        }
+
+        async fn put_bytes(
+            &self,
+            _url: &str,
+            _content_type: &str,
+            _body: Vec<u8>,
         ) -> Result<HttpResponse> {
             Ok(self.write_response.lock().unwrap().clone())
         }

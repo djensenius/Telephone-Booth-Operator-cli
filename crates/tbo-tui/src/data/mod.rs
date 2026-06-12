@@ -37,6 +37,17 @@ pub type SharedSession = Arc<SessionManager<Box<dyn TokenStore>, AuthTransport>>
 /// The concrete operator client the TUI uses for all read endpoints.
 pub type OperatorApi = OperatorClient<ReqwestTransport, SessionTokenProvider>;
 
+/// The result of a completed operator write action, surfaced by the app as a
+/// toast. Shared by the controllers that issue mutating requests (messages,
+/// questions, …); the app reloads the relevant list when `ok` is `true`.
+#[derive(Debug, Clone)]
+pub struct ActionOutcome {
+    /// Human-readable summary of the outcome.
+    pub message: String,
+    /// Whether the action succeeded.
+    pub ok: bool,
+}
+
 /// Adapts the `tbo-auth` [`SessionManager`] to the operator client's
 /// [`TokenProvider`], performing proactive refresh on each token request.
 ///
