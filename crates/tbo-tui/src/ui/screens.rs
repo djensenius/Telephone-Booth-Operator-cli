@@ -14,9 +14,10 @@ use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
 
 use tbo_core::domain::{
-    BoothEventRecord, BoothEventType, BoothState, BoothStatus, CallOutcome, CallSession,
-    CallSessionDetail, Message, MessageStatus, Moderation, ModerationRecommendation, Question,
-    QuestionStatus, RuntimeMode, StatsOverview, StatsWindow, Transcription, TranscriptionStatus,
+    BoothEventRecord, BoothEventType, BoothState, BoothStatus, BoothSystemSnapshot,
+    BoothSystemSnapshotEnvelope, CallOutcome, CallSession, CallSessionDetail, Message,
+    MessageStatus, Moderation, ModerationRecommendation, Question, QuestionStatus, RuntimeMode,
+    StatsOverview, StatsWindow, Transcription, TranscriptionStatus,
 };
 
 use crate::app::App;
@@ -181,6 +182,15 @@ pub fn render(app: &App, frame: &mut Frame, area: Rect) {
         Screen::Sessions => render_sessions(app, frame, area),
         Screen::Stats => {
             render_paragraph(frame, area, theme, "Statistics", stats_lines(app, theme));
+        }
+        Screen::LiveSystem => {
+            render_paragraph(
+                frame,
+                area,
+                theme,
+                "Live System",
+                live_system_lines(app, theme),
+            );
         }
         Screen::Status => render_paragraph(frame, area, theme, "Status", status_lines(app, theme)),
         Screen::Settings => {
@@ -1161,6 +1171,343 @@ fn sparkline(values: &[u64]) -> String {
         .collect()
 }
 
+/// Body lines for the Live System screen.
+fn live_system_lines(app: &App, theme: &Theme) -> Vec<Line<'static>> {
+    let controller = app.system();
+    match controller.state() {
+        Remote::Ready { value, fetched_at } if !value.items.is_empty() => {
+            let mut lines = vec![header(theme, Screen::LiveSystem.title()), Line::raw("")];
+            for envelope in &value.items {
+                push_system_envelope(&mut lines, theme, envelope);
+                lines.push(Line::raw(""));
+            }
+            if controller.is_refreshing() {
+                lines.push(note_line(theme, "Refreshing…".to_owned()));
+            } else {
+                lines.push(note_line(
+                    theme,
+                    format!("Polled {} · auto-refreshes every 5s.", ago(*fetched_at)),
+                ));
+            }
+            lines
+        }
+        other => {
+            let mut lines = vec![header(theme, Screen::LiveSystem.title()), Line::raw("")];
+            match other {
+                Remote::Failed { error, at } => {
+                    lines.push(Line::from(Span::styled(
+                        format!("Failed to load system snapshot: {error}"),
+                        Style::new().fg(theme.error),
+                    )));
+                    lines.push(note_line(theme, format!("Last attempt {}.", ago(*at))));
+                    lines.push(hint_line(theme, "Press r to retry."));
+                }
+                Remote::Ready { .. } => {
+                    lines.push(note_line(
+                        theme,
+                        "No booths have reported a system snapshot yet.".to_owned(),
+                    ));
+                }
+                _ => lines.push(note_line(theme, "Loading system snapshot…".to_owned())),
+            }
+            lines
+        }
+    }
+}
+
+/// Append one booth's readout section.
+fn push_system_envelope(
+    lines: &mut Vec<Line<'static>>,
+    theme: &Theme,
+    envelope: &BoothSystemSnapshotEnvelope,
+) {
+    let mut head = vec![Span::styled(
+        format!("Booth {}", envelope.booth_id),
+        Style::new().fg(theme.accent).add_modifier(Modifier::BOLD),
+    )];
+    if let Some(version) = &envelope.version {
+        head.push(Span::styled(
+            format!("  v{version}"),
+            Style::new().fg(theme.dim),
+        ));
+    }
+    lines.push(Line::from(head));
+    lines.push(note_line(
+        theme,
+        format!("Updated {}", format_ts(envelope.received_at)),
+    ));
+
+    let snapshot = &envelope.snapshot;
+    push_cpu_lines(lines, theme, snapshot);
+    push_memory_lines(lines, theme, snapshot);
+    push_disk_lines(lines, theme, snapshot);
+    push_network_lines(lines, theme, snapshot);
+    push_host_lines(lines, theme, snapshot);
+}
+
+/// CPU, temperature, and load-average lines.
+fn push_cpu_lines(lines: &mut Vec<Line<'static>>, theme: &Theme, snapshot: &BoothSystemSnapshot) {
+    if let Some(temp) = snapshot.temperature_celsius {
+        lines.push(kv_line(theme, "Temp:      ", format!("{temp:.1} °C")));
+    }
+    if let Some(mode) = snapshot.runtime_mode {
+        lines.push(kv_line(theme, "Mode:      ", mode_label(mode).to_owned()));
+    }
+    let Some(cpu) = &snapshot.cpu else {
+        return;
+    };
+    if let Some(usage) = cpu.usage_ratio {
+        lines.push(kv_line(
+            theme,
+            "CPU:       ",
+            format!("{} {}", percent_bar(usage), format_ratio(usage)),
+        ));
+    }
+    if cpu.load_avg1m.is_some() || cpu.load_avg5m.is_some() || cpu.load_avg15m.is_some() {
+        lines.push(kv_line(
+            theme,
+            "Load:      ",
+            format!(
+                "{} / {} / {}  (1m/5m/15m)",
+                optional_load(cpu.load_avg1m),
+                optional_load(cpu.load_avg5m),
+                optional_load(cpu.load_avg15m),
+            ),
+        ));
+    }
+    if let Some(cores) = cpu.physical_cores {
+        lines.push(kv_line(theme, "Cores:     ", cores.to_string()));
+    }
+    if let Some(per_core) = &cpu.per_core_usage_ratio
+        && !per_core.is_empty()
+    {
+        let bars: String = per_core.iter().map(|&ratio| ratio_block(ratio)).collect();
+        lines.push(kv_line(theme, "Per-core:  ", bars));
+    }
+}
+
+/// Memory and swap lines.
+fn push_memory_lines(
+    lines: &mut Vec<Line<'static>>,
+    theme: &Theme,
+    snapshot: &BoothSystemSnapshot,
+) {
+    let Some(memory) = &snapshot.memory else {
+        return;
+    };
+    if let (Some(used), Some(total)) = (memory.used_bytes, memory.total_bytes)
+        && total > 0
+    {
+        lines.push(kv_line(
+            theme,
+            "Memory:    ",
+            format!(
+                "{} {} / {} ({})",
+                percent_bar(ratio_of(used, total)),
+                format_bytes(used),
+                format_bytes(total),
+                percent(used, total),
+            ),
+        ));
+    }
+    if let (Some(used), Some(total)) = (memory.swap_used_bytes, memory.swap_total_bytes)
+        && total > 0
+    {
+        lines.push(kv_line(
+            theme,
+            "Swap:      ",
+            format!(
+                "{} / {} ({})",
+                format_bytes(used),
+                format_bytes(total),
+                percent(used, total)
+            ),
+        ));
+    }
+}
+
+/// Per-mount disk usage lines.
+fn push_disk_lines(lines: &mut Vec<Line<'static>>, theme: &Theme, snapshot: &BoothSystemSnapshot) {
+    let Some(disks) = &snapshot.disks else {
+        return;
+    };
+    for disk in disks {
+        let used = disk.total_bytes.saturating_sub(disk.available_bytes);
+        lines.push(Line::from(vec![
+            Span::styled(
+                format!("Disk {:<6} ", truncate(&disk.mount_point, 6)),
+                Style::new().fg(theme.dim),
+            ),
+            Span::raw(format!(
+                "{} {} / {} ({} free)",
+                percent_bar(ratio_of(used, disk.total_bytes)),
+                format_bytes(used),
+                format_bytes(disk.total_bytes),
+                format_bytes(disk.available_bytes),
+            )),
+        ]));
+    }
+}
+
+/// Per-interface network counter lines.
+fn push_network_lines(
+    lines: &mut Vec<Line<'static>>,
+    theme: &Theme,
+    snapshot: &BoothSystemSnapshot,
+) {
+    let Some(networks) = &snapshot.networks else {
+        return;
+    };
+    for network in networks {
+        lines.push(Line::from(vec![
+            Span::styled(
+                format!("Net {:<7} ", truncate(&network.interface, 7)),
+                Style::new().fg(theme.dim),
+            ),
+            Span::raw(format!(
+                "↓ {}  ↑ {}",
+                format_bytes(network.receive_bytes_total),
+                format_bytes(network.transmit_bytes_total),
+            )),
+        ]));
+    }
+}
+
+/// Uptime, process, audio, Tailscale, and throttling lines.
+fn push_host_lines(lines: &mut Vec<Line<'static>>, theme: &Theme, snapshot: &BoothSystemSnapshot) {
+    if let Some(uptime) = snapshot.uptime_seconds {
+        lines.push(kv_line(theme, "Uptime:    ", format_uptime(uptime)));
+    }
+    if let Some(audio) = &snapshot.audio {
+        let input = audio.input_device.clone().unwrap_or_else(|| "—".to_owned());
+        let output = audio
+            .output_device
+            .clone()
+            .unwrap_or_else(|| "—".to_owned());
+        lines.push(kv_line(theme, "Audio in:  ", input));
+        lines.push(kv_line(theme, "Audio out: ", output));
+    }
+    if let Some(tailscale) = &snapshot.tailscale {
+        let connected = match tailscale.connected {
+            Some(true) => "connected",
+            Some(false) => "offline",
+            None => "unknown",
+        };
+        let value = tailscale.hostname.as_ref().map_or_else(
+            || connected.to_owned(),
+            |host| format!("{connected} ({host})"),
+        );
+        lines.push(kv_line(theme, "Tailscale: ", value));
+    }
+    if let Some(throttling) = &snapshot.throttling {
+        let mut flags = Vec::new();
+        if throttling.undervoltage == Some(true) {
+            flags.push("under-voltage");
+        }
+        if throttling.throttled == Some(true) {
+            flags.push("throttled");
+        }
+        if throttling.arm_freq_capped == Some(true) {
+            flags.push("freq-capped");
+        }
+        if throttling.soft_temp_limit == Some(true) {
+            flags.push("soft-temp-limit");
+        }
+        if !flags.is_empty() {
+            lines.push(Line::from(vec![
+                Span::styled("Throttling:", Style::new().fg(theme.dim)),
+                Span::styled(
+                    format!(" {}", flags.join(", ")),
+                    Style::new().fg(theme.warn),
+                ),
+            ]));
+        }
+    }
+}
+
+/// Format a CPU load average, or `—` when absent.
+fn optional_load(load: Option<f64>) -> String {
+    load.map_or_else(|| "—".to_owned(), |value| format!("{value:.2}"))
+}
+
+/// Format a `0.0..=1.0` ratio as a whole percentage.
+fn format_ratio(ratio: f64) -> String {
+    format!("{:.0}%", ratio.clamp(0.0, 1.0) * 100.0)
+}
+
+/// The ratio of `part` to `whole` as a clamped `f64`, guarding against zero.
+fn ratio_of(part: u64, whole: u64) -> f64 {
+    if whole == 0 {
+        return 0.0;
+    }
+    let scaled = part.saturating_mul(1000) / whole;
+    f64::from(u16::try_from(scaled.min(1000)).unwrap_or(1000)) / 1000.0
+}
+
+/// A fixed-width 10-cell bar representing a `0.0..=1.0` ratio.
+fn percent_bar(ratio: f64) -> String {
+    let clamped = ratio.clamp(0.0, 1.0);
+    (0..10)
+        .map(|cell| {
+            if clamped > f64::from(cell) / 10.0 {
+                '█'
+            } else {
+                '░'
+            }
+        })
+        .collect()
+}
+
+/// A single Unicode bar block representing a `0.0..=1.0` ratio.
+fn ratio_block(ratio: f64) -> char {
+    const BARS: [char; 8] = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
+    let clamped = ratio.clamp(0.0, 1.0);
+    let mut chosen = BARS[0];
+    for (slot, bar) in BARS.iter().enumerate() {
+        let lower = f64::from(u8::try_from(slot).unwrap_or(0)) / 8.0;
+        if clamped >= lower {
+            chosen = *bar;
+        }
+    }
+    chosen
+}
+
+/// Human-readable byte size with one decimal (e.g. `1.5 GiB`).
+fn format_bytes(bytes: u64) -> String {
+    const UNITS: [&str; 6] = ["B", "KiB", "MiB", "GiB", "TiB", "PiB"];
+    let mut whole = bytes;
+    let mut frac_tenths = 0;
+    let mut unit = 0;
+    while whole >= 1024 && unit < UNITS.len() - 1 {
+        frac_tenths = (whole % 1024) * 10 / 1024;
+        whole /= 1024;
+        unit += 1;
+    }
+    if unit == 0 {
+        format!("{whole} {}", UNITS[unit])
+    } else {
+        format!("{whole}.{frac_tenths} {}", UNITS[unit])
+    }
+}
+
+/// Format an uptime in seconds as `Xd Yh Zm` (omitting leading zero units).
+fn format_uptime(seconds: f64) -> String {
+    if !seconds.is_finite() || seconds < 0.0 {
+        return "—".to_owned();
+    }
+    let total = std::time::Duration::from_secs_f64(seconds).as_secs();
+    let days = total / 86_400;
+    let hours = (total % 86_400) / 3_600;
+    let minutes = (total % 3_600) / 60;
+    if days > 0 {
+        format!("{days}d {hours}h {minutes}m")
+    } else if hours > 0 {
+        format!("{hours}h {minutes}m")
+    } else {
+        format!("{minutes}m")
+    }
+}
+
 /// The title header line for a screen body.
 fn header(theme: &Theme, title: &'static str) -> Line<'static> {
     Line::from(Span::styled(
@@ -1438,7 +1785,10 @@ fn format_expiry(expires_at: Option<OffsetDateTime>) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{Screen, format_millis_f64, percent, sparkline};
+    use super::{
+        Screen, format_bytes, format_millis_f64, format_uptime, percent, percent_bar, ratio_block,
+        ratio_of, sparkline,
+    };
 
     #[test]
     fn index_round_trips_for_every_screen() {
@@ -1491,5 +1841,36 @@ mod tests {
         assert_eq!(line.chars().count(), 3);
         assert!(line.starts_with('▁'));
         assert!(line.ends_with('█'));
+    }
+
+    #[test]
+    fn format_bytes_uses_binary_units_with_one_decimal() {
+        assert_eq!(format_bytes(500), "500 B");
+        assert_eq!(format_bytes(1536), "1.5 KiB");
+        assert_eq!(format_bytes(1_073_741_824), "1.0 GiB");
+    }
+
+    #[test]
+    fn format_uptime_omits_leading_zero_units() {
+        assert_eq!(format_uptime(90.0), "1m");
+        assert_eq!(format_uptime(3_660.0), "1h 1m");
+        assert_eq!(format_uptime(90_061.0), "1d 1h 1m");
+        assert_eq!(format_uptime(-1.0), "—");
+        assert_eq!(format_uptime(f64::NAN), "—");
+    }
+
+    #[test]
+    fn ratio_of_guards_zero_and_clamps() {
+        assert!((ratio_of(0, 0) - 0.0).abs() < f64::EPSILON);
+        assert!((ratio_of(1, 2) - 0.5).abs() < 0.01);
+        assert!(ratio_of(5, 4) <= 1.0);
+    }
+
+    #[test]
+    fn bars_have_expected_widths() {
+        assert_eq!(percent_bar(0.0).chars().count(), 10);
+        assert_eq!(percent_bar(1.0), "██████████");
+        assert_eq!(ratio_block(0.0), '▁');
+        assert_eq!(ratio_block(1.0), '█');
     }
 }

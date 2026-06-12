@@ -12,7 +12,7 @@ use tokio::time::Duration;
 use crate::auth::{AuthController, AuthPhase};
 use crate::data::{
     MessagesController, QuestionsController, SessionTokenProvider, SessionsController,
-    SharedSession, StatsController, StatusController,
+    SharedSession, StatsController, StatusController, SystemController,
 };
 use crate::event::{AppEvent, EventLoop};
 use crate::tui::Tui;
@@ -36,6 +36,7 @@ pub struct App {
     questions: QuestionsController,
     sessions: SessionsController,
     stats: StatsController,
+    system: SystemController,
     should_quit: bool,
 }
 
@@ -79,7 +80,8 @@ impl App {
             messages,
             questions,
             sessions,
-            stats: StatsController::new(api),
+            stats: StatsController::new(api.clone()),
+            system: SystemController::new(api),
             should_quit: false,
         })
     }
@@ -173,6 +175,12 @@ impl App {
         &self.stats
     }
 
+    /// The live system controller (drives the Live System screen).
+    #[must_use]
+    pub fn system(&self) -> &SystemController {
+        &self.system
+    }
+
     /// Run the draw/event loop until the user quits.
     pub async fn run(mut self, terminal: &mut Tui) -> Result<()> {
         let mut events = EventLoop::new(TICK);
@@ -186,6 +194,7 @@ impl App {
                     self.questions.tick(self.screen == Screen::Questions);
                     self.sessions.tick(self.screen == Screen::Sessions);
                     self.stats.tick(self.screen == Screen::Stats);
+                    self.system.tick(self.screen == Screen::LiveSystem);
                     self.toasts.prune();
                 }
                 AppEvent::Key(key) => self.on_key(key),
@@ -235,6 +244,7 @@ impl App {
             Screen::Questions => self.questions.refresh(),
             Screen::Sessions => self.sessions.refresh(),
             Screen::Stats => self.stats.refresh(),
+            Screen::LiveSystem => self.system.refresh(),
             _ => {}
         }
     }

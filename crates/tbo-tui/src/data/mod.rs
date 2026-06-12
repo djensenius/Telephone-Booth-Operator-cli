@@ -12,6 +12,7 @@ mod questions;
 mod sessions;
 mod stats;
 mod status;
+mod system;
 
 use std::sync::Arc;
 use std::time::Instant;
@@ -26,6 +27,7 @@ pub use questions::QuestionsController;
 pub use sessions::SessionsController;
 pub use stats::StatsController;
 pub use status::StatusController;
+pub use system::SystemController;
 
 /// The session manager shared between the auth controller and the data layer.
 pub type SharedSession = Arc<SessionManager<Box<dyn TokenStore>, AuthTransport>>;
