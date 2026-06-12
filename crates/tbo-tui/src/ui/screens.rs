@@ -852,6 +852,12 @@ fn render_events(app: &App, frame: &mut Frame, area: Rect) {
 
             let mut detail = event_detail_lines(theme, controller.selected_event());
             detail.push(Line::raw(""));
+            if controller.is_following() {
+                detail.push(Line::from(Span::styled(
+                    "● live tail on (f to pause)".to_owned(),
+                    Style::new().fg(theme.ok),
+                )));
+            }
             if controller.is_refreshing() {
                 detail.push(note_line(theme, "Refreshing…".to_owned()));
             } else {
@@ -859,13 +865,17 @@ fn render_events(app: &App, frame: &mut Frame, area: Rect) {
             }
             render_paragraph(frame, columns[1], theme, "Detail", detail);
         }
-        other => render_paragraph(
-            frame,
-            area,
-            theme,
-            "Events",
-            events_status_lines(theme, other),
-        ),
+        other => {
+            let mut lines = events_status_lines(theme, other);
+            if controller.is_following() {
+                lines.push(Line::raw(""));
+                lines.push(Line::from(Span::styled(
+                    "● live tail on (f to pause)".to_owned(),
+                    Style::new().fg(theme.ok),
+                )));
+            }
+            render_paragraph(frame, area, theme, "Events", lines);
+        }
     }
 }
 

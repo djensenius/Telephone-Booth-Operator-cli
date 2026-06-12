@@ -7,6 +7,8 @@
 
 use std::future::Future;
 
+use futures::stream::{BoxStream, StreamExt};
+
 use crate::error::{OperatorError, Result};
 
 /// A minimal HTTP response: the status code and the body decoded as UTF-8.
@@ -41,6 +43,28 @@ pub trait HttpTransport: Send + Sync {
         query: &[(&str, String)],
         bearer: Option<&str>,
     ) -> impl Future<Output = Result<HttpResponse>> + Send;
+}
+
+/// A boxed stream of raw byte chunks from a server-sent events response.
+///
+/// Chunk boundaries are arbitrary (they may split lines or UTF-8 sequences);
+/// the [`SseParser`](crate::sse::SseParser) reassembles whole events.
+pub type ByteStream = BoxStream<'static, Result<Vec<u8>>>;
+
+/// Opens long-lived server-sent event streams against the operator API.
+///
+/// Separate from [`HttpTransport`] so the request/response transport stays
+/// simple; production code implements both on [`ReqwestTransport`], while tests
+/// can supply canned byte streams.
+pub trait SseTransport: HttpTransport {
+    /// Issue a streaming `GET` to `path` with `Accept: text/event-stream`,
+    /// returning the response body as a stream of byte chunks.
+    fn get_sse(
+        &self,
+        path: &str,
+        query: &[(&str, String)],
+        bearer: Option<&str>,
+    ) -> impl Future<Output = Result<ByteStream>> + Send;
 }
 
 /// A [`reqwest`]-backed transport using rustls.
@@ -99,5 +123,45 @@ impl HttpTransport for ReqwestTransport {
             .await
             .map_err(|err| OperatorError::Transport(err.to_string()))?;
         Ok(HttpResponse { status, body })
+    }
+}
+
+impl SseTransport for ReqwestTransport {
+    async fn get_sse(
+        &self,
+        path: &str,
+        query: &[(&str, String)],
+        bearer: Option<&str>,
+    ) -> Result<ByteStream> {
+        let url = format!("{}{path}", self.base_url.trim_end_matches('/'));
+        let mut request = self.client.get(url).header("accept", "text/event-stream");
+        if !query.is_empty() {
+            request = request.query(query);
+        }
+        if let Some(token) = bearer {
+            request = request.bearer_auth(token);
+        }
+        let response = request
+            .send()
+            .await
+            .map_err(|err| OperatorError::Transport(err.to_string()))?;
+        let status = response.status().as_u16();
+        if !(200..300).contains(&status) {
+            let body = response.text().await.unwrap_or_default();
+            return Err(match status {
+                401 | 403 => OperatorError::Unauthorized(status),
+                404 => OperatorError::NotFound,
+                _ => OperatorError::Http { status, body },
+            });
+        }
+        let stream = response
+            .bytes_stream()
+            .map(|chunk| {
+                chunk
+                    .map(|bytes| bytes.to_vec())
+                    .map_err(|err| OperatorError::Transport(err.to_string()))
+            })
+            .boxed();
+        Ok(stream)
     }
 }

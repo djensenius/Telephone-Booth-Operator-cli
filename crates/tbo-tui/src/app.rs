@@ -236,6 +236,9 @@ impl App {
             KeyCode::Up | KeyCode::Char('k') => self.select_prev_active(),
             KeyCode::Char('r' | 'R') => self.refresh_active(),
             KeyCode::Char('w' | 'W') if self.screen == Screen::Stats => self.stats.cycle_window(),
+            KeyCode::Char('f' | 'F') if self.screen == Screen::Events => {
+                self.events.toggle_follow();
+            }
             KeyCode::Char('l' | 'L') if self.screen == Screen::Settings => self.begin_login(),
             KeyCode::Char('o' | 'O') if self.screen == Screen::Settings => {
                 self.auth.sign_out(&mut self.toasts);
