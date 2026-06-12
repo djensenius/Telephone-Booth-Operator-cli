@@ -1133,13 +1133,15 @@ fn format_millis_f64(ms: f64) -> String {
     if !ms.is_finite() || ms < 0.0 {
         return "—".to_owned();
     }
-    let seconds = ms / 1000.0;
-    if seconds >= 60.0 {
-        let minutes = (seconds / 60.0).floor();
-        let remainder = seconds - minutes * 60.0;
+    // Round to whole seconds first so splitting into minutes/seconds can never
+    // produce a carry like "1m 60s".
+    let total_seconds = (ms / 1000.0).round();
+    if total_seconds >= 60.0 {
+        let minutes = (total_seconds / 60.0).floor();
+        let remainder = total_seconds - minutes * 60.0;
         format!("{minutes:.0}m {remainder:02.0}s")
     } else {
-        format!("{seconds:.1}s")
+        format!("{:.1}s", ms / 1000.0)
     }
 }
 
@@ -1436,7 +1438,7 @@ fn format_expiry(expires_at: Option<OffsetDateTime>) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::Screen;
+    use super::{Screen, format_millis_f64, percent, sparkline};
 
     #[test]
     fn index_round_trips_for_every_screen() {
@@ -1463,5 +1465,31 @@ mod tests {
             assert!(!screen.short().is_empty());
             assert!(!screen.description().is_empty());
         }
+    }
+
+    #[test]
+    fn format_millis_never_carries_to_sixty_seconds() {
+        // 119_500ms rounds to 120s, which must render as "2m 00s", not "1m 60s".
+        assert_eq!(format_millis_f64(119_500.0), "2m 00s");
+        assert_eq!(format_millis_f64(65_000.0), "1m 05s");
+        assert_eq!(format_millis_f64(4_200.0), "4.2s");
+        assert_eq!(format_millis_f64(-1.0), "—");
+        assert_eq!(format_millis_f64(f64::NAN), "—");
+    }
+
+    #[test]
+    fn percent_handles_zero_denominator() {
+        assert_eq!(percent(0, 0), "0%");
+        assert_eq!(percent(3, 4), "75%");
+        assert_eq!(percent(2, 2), "100%");
+    }
+
+    #[test]
+    fn sparkline_scales_and_handles_empty_max() {
+        assert_eq!(sparkline(&[0, 0, 0]), "▁▁▁");
+        let line = sparkline(&[0, 4, 8]);
+        assert_eq!(line.chars().count(), 3);
+        assert!(line.starts_with('▁'));
+        assert!(line.ends_with('█'));
     }
 }

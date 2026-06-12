@@ -76,6 +76,14 @@ where
         if self.in_flight {
             return;
         }
+        self.start_load();
+    }
+
+    /// Spawn a load for the current window, replacing any in-flight request.
+    ///
+    /// Replacing `self.rx` discards any result still pending from a previous
+    /// request, so the most recently requested window always wins.
+    fn start_load(&mut self) {
         self.in_flight = true;
         if matches!(self.state, Remote::Idle | Remote::Failed { .. }) {
             self.state = Remote::Loading;
@@ -100,10 +108,9 @@ where
             .position(|window| *window == self.window)
             .unwrap_or(0);
         self.window = WINDOW_CYCLE[(index + 1) % WINDOW_CYCLE.len()];
-        // A window change forces a reload even when one is not yet in flight.
-        if !self.in_flight {
-            self.refresh();
-        }
+        // A window change always forces a fresh load, even if one is already in
+        // flight, so the visible data matches the selected window.
+        self.start_load();
     }
 
     /// Apply any completed load (non-blocking). Called each tick.
@@ -169,25 +176,26 @@ where
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-    use std::sync::{Arc, Mutex};
-
     use tbo_operator_client::{HttpResponse, HttpTransport, Result, StaticTokenProvider};
 
     use super::*;
 
     #[derive(Clone)]
     struct FakeTransport {
-        response: Arc<Mutex<HttpResponse>>,
+        status: u16,
+        ok: bool,
     }
 
     impl FakeTransport {
-        fn new(status: u16, body: &str) -> Self {
+        fn ok() -> Self {
             Self {
-                response: Arc::new(Mutex::new(HttpResponse {
-                    status,
-                    body: body.to_owned(),
-                })),
+                status: 200,
+                ok: true,
             }
+        }
+
+        fn failing(status: u16) -> Self {
+            Self { status, ok: false }
         }
     }
 
@@ -195,28 +203,41 @@ mod tests {
         async fn get(
             &self,
             _path: &str,
-            _query: &[(&str, String)],
+            query: &[(&str, String)],
             _bearer: Option<&str>,
         ) -> Result<HttpResponse> {
-            Ok(self.response.lock().unwrap().clone())
+            // Echo the requested window back in the body so tests can assert
+            // which window's data was loaded.
+            let window = query
+                .iter()
+                .find_map(|(key, value)| (*key == "window").then(|| value.clone()))
+                .unwrap_or_else(|| "7d".to_owned());
+            let body = if self.ok {
+                overview_json(&window)
+            } else {
+                String::new()
+            };
+            Ok(HttpResponse {
+                status: self.status,
+                body,
+            })
         }
     }
 
-    fn overview_json() -> &'static str {
-        r#"{"window":"7d","rangeEnd":"2026-01-01T00:00:00Z","generatedAt":"2026-01-01T00:00:00Z","timezone":"UTC","calls":{"total":3,"completed":2,"inProgress":0,"outcomes":{},"perDay":[]},"messages":{"total":2,"byStatus":{}},"playback":{"totalPlaybacks":5},"pickupsHangups":{"pickups":3,"hangups":3,"digitsDialed":{}},"uploads":{"succeeded":2,"failed":0},"topQuestions":[],"hourly":[],"busiest":{},"boothBreakdown":[]}"#
+    fn overview_json(window: &str) -> String {
+        format!(
+            r#"{{"window":"{window}","rangeEnd":"2026-01-01T00:00:00Z","generatedAt":"2026-01-01T00:00:00Z","timezone":"UTC","calls":{{"total":3,"completed":2,"inProgress":0,"outcomes":{{}},"perDay":[]}},"messages":{{"total":2,"byStatus":{{}}}},"playback":{{"totalPlaybacks":5}},"pickupsHangups":{{"pickups":3,"hangups":3,"digitsDialed":{{}}}},"uploads":{{"succeeded":2,"failed":0}},"topQuestions":[],"hourly":[],"busiest":{{}},"boothBreakdown":[]}}"#
+        )
     }
 
-    fn controller(status: u16, body: &str) -> StatsController<FakeTransport, StaticTokenProvider> {
-        let client = OperatorClient::with_transport(
-            FakeTransport::new(status, body),
-            StaticTokenProvider::new("token"),
-        );
+    fn controller(transport: FakeTransport) -> StatsController<FakeTransport, StaticTokenProvider> {
+        let client = OperatorClient::with_transport(transport, StaticTokenProvider::new("token"));
         StatsController::new(client)
     }
 
     #[tokio::test]
     async fn refresh_loads_overview_into_ready() {
-        let mut controller = controller(200, overview_json());
+        let mut controller = controller(FakeTransport::ok());
         controller.refresh();
         controller.recv_once().await;
         match controller.state() {
@@ -227,7 +248,7 @@ mod tests {
 
     #[tokio::test]
     async fn cycle_window_advances_and_reloads() {
-        let mut controller = controller(200, overview_json());
+        let mut controller = controller(FakeTransport::ok());
         assert_eq!(controller.window(), StatsWindow::Week);
 
         controller.cycle_window();
@@ -245,8 +266,26 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn cycle_window_while_loading_reloads_for_new_window() {
+        let mut controller = controller(FakeTransport::ok());
+        // Begin a load for the default (Week) window but do not apply it.
+        controller.refresh();
+        assert!(controller.is_refreshing());
+
+        // Cycling while in flight must start a fresh load for the new window;
+        // the result that lands should reflect the new window, not the old.
+        controller.cycle_window();
+        assert_eq!(controller.window(), StatsWindow::Month);
+        controller.recv_once().await;
+        match controller.state() {
+            Remote::Ready { value, .. } => assert_eq!(value.window, StatsWindow::Month),
+            other => panic!("expected Ready for Month window, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
     async fn failed_load_becomes_failed_state() {
-        let mut controller = controller(401, "");
+        let mut controller = controller(FakeTransport::failing(401));
         controller.refresh();
         controller.recv_once().await;
         assert!(matches!(controller.state(), Remote::Failed { .. }));
