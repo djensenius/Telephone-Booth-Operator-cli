@@ -506,8 +506,13 @@ where
         }
     }
 
-    /// Prepend a live log line, capping the buffer at [`LOG_LIMIT`].
+    /// Prepend a live log line, capping the buffer at [`LOG_LIMIT`]. Entries
+    /// below the currently selected [`log_level`](Self::log_level) are dropped
+    /// so the live view matches the server-side filtering used by REST polls.
     fn push_live_log(&mut self, ts: SystemTime, level: String, target: String, message: String) {
+        if level_rank(&level) < level_rank(&self.log_level) {
+            return;
+        }
         self.logs.insert(
             0,
             LogEntry {
@@ -537,6 +542,18 @@ fn linear_to_dbfs(magnitude: f32) -> f32 {
         return -120.0;
     }
     (20.0 * magnitude.log10()).clamp(-120.0, 0.0)
+}
+
+/// Rank a log level by severity (higher is more severe). Unknown levels rank as
+/// `info` so they are neither always shown nor always hidden.
+fn level_rank(level: &str) -> u8 {
+    match level.to_ascii_lowercase().as_str() {
+        "error" => 4,
+        "warn" | "warning" => 3,
+        "debug" => 1,
+        "trace" => 0,
+        _ => 2,
+    }
 }
 
 /// A silent audio snapshot (all channels at the `-120` dBFS floor) used to seed
@@ -824,6 +841,35 @@ mod tests {
         let first = controller.logs().first().unwrap();
         assert_eq!(first.message, "hi");
         assert_eq!(first.level, "warn");
+    }
+
+    #[test]
+    fn live_log_below_selected_level_is_dropped() {
+        let mut controller = controller(RoutingTransport::default());
+        assert_eq!(controller.log_level(), "info");
+
+        // A debug entry is below the default `info` threshold and is skipped.
+        controller.apply_record(record(
+            1,
+            TelemetryEvent::Log {
+                level: "debug".to_owned(),
+                target: "booth".to_owned(),
+                message: "noisy".to_owned(),
+            },
+        ));
+        assert!(controller.logs().is_empty());
+
+        // An error entry is at or above the threshold and is kept.
+        controller.apply_record(record(
+            2,
+            TelemetryEvent::Log {
+                level: "error".to_owned(),
+                target: "booth".to_owned(),
+                message: "boom".to_owned(),
+            },
+        ));
+        assert_eq!(controller.logs().len(), 1);
+        assert_eq!(controller.logs()[0].message, "boom");
     }
 
     #[test]
