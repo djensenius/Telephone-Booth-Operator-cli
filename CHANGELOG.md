@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.2](https://github.com/djensenius/Telephone-Booth-Operator-cli/compare/v0.2.1...v0.2.2) (2026-06-12)
+
+
+### Bug Fixes
+
+* install ALSA for the x86_64 .deb cross-build ([#67](https://github.com/djensenius/Telephone-Booth-Operator-cli/issues/67)) ([0235eb5](https://github.com/djensenius/Telephone-Booth-Operator-cli/commit/0235eb5e240e3082c400307278343a1a3a90833e))
+
 ## [0.2.1](https://github.com/djensenius/Telephone-Booth-Operator-cli/compare/v0.2.0...v0.2.1) (2026-06-12)
 
 
