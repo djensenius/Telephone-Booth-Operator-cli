@@ -10,7 +10,7 @@ use tbo_operator_client::OperatorClient;
 use tokio::time::Duration;
 
 use crate::auth::{AuthController, AuthPhase};
-use crate::data::{SessionTokenProvider, SharedSession, StatusController};
+use crate::data::{MessagesController, SessionTokenProvider, SharedSession, StatusController};
 use crate::event::{AppEvent, EventLoop};
 use crate::tui::Tui;
 use crate::ui;
@@ -29,6 +29,7 @@ pub struct App {
     toasts: Toasts,
     auth: AuthController,
     status: StatusController,
+    messages: MessagesController,
     should_quit: bool,
 }
 
@@ -57,7 +58,8 @@ impl App {
             config.operator.base_url.clone(),
             SessionTokenProvider::new(session),
         )?;
-        let status = StatusController::new(api);
+        let status = StatusController::new(api.clone());
+        let messages = MessagesController::new(api);
 
         Ok(Self {
             config,
@@ -66,6 +68,7 @@ impl App {
             toasts,
             auth,
             status,
+            messages,
             should_quit: false,
         })
     }
@@ -135,6 +138,12 @@ impl App {
         &self.status
     }
 
+    /// The messages controller (drives the Messages screen).
+    #[must_use]
+    pub fn messages(&self) -> &MessagesController {
+        &self.messages
+    }
+
     /// Run the draw/event loop until the user quits.
     pub async fn run(mut self, terminal: &mut Tui) -> Result<()> {
         let mut events = EventLoop::new(TICK);
@@ -144,6 +153,7 @@ impl App {
                 AppEvent::Tick => {
                     self.auth.drain(&mut self.toasts);
                     self.status.tick(self.screen == Screen::Status);
+                    self.messages.tick(self.screen == Screen::Messages);
                     self.toasts.prune();
                 }
                 AppEvent::Key(key) => self.on_key(key),
@@ -172,12 +182,27 @@ impl App {
             }
             KeyCode::Tab | KeyCode::Right => self.screen = self.screen.next(),
             KeyCode::BackTab | KeyCode::Left => self.screen = self.screen.prev(),
-            KeyCode::Char('r' | 'R') if self.screen == Screen::Status => self.status.refresh(),
+            KeyCode::Down | KeyCode::Char('j') if self.screen == Screen::Messages => {
+                self.messages.select_next();
+            }
+            KeyCode::Up | KeyCode::Char('k') if self.screen == Screen::Messages => {
+                self.messages.select_prev();
+            }
+            KeyCode::Char('r' | 'R') => self.refresh_active(),
             KeyCode::Char('l' | 'L') if self.screen == Screen::Settings => self.begin_login(),
             KeyCode::Char('o' | 'O') if self.screen == Screen::Settings => {
                 self.auth.sign_out(&mut self.toasts);
             }
             KeyCode::Char(c) if c.is_ascii_digit() && c != '0' => self.jump_to_digit(c),
+            _ => {}
+        }
+    }
+
+    /// Refresh the data backing the active screen, if it has any.
+    fn refresh_active(&mut self) {
+        match self.screen {
+            Screen::Status => self.status.refresh(),
+            Screen::Messages => self.messages.refresh(),
             _ => {}
         }
     }
