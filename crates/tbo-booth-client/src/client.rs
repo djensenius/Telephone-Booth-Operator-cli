@@ -36,6 +36,53 @@ impl BoothClient<ReqwestBoothTransport> {
             token,
         ))
     }
+
+    /// Build a client against a booth LAN HTTPS `base_url` that trusts the
+    /// self-signed certificate by its pinned SHA-256 `fingerprint`.
+    ///
+    /// # Errors
+    /// Returns [`BoothError::InvalidRequest`] when `fingerprint` is not a valid
+    /// 32-byte hex digest, or [`BoothError::Transport`] when the HTTP client
+    /// cannot be built.
+    pub fn with_pinned_tls(
+        base_url: impl Into<String>,
+        token: Option<String>,
+        fingerprint: &str,
+    ) -> Result<Self> {
+        Ok(Self::with_transport(
+            ReqwestBoothTransport::pinned(base_url, fingerprint)?,
+            token,
+        ))
+    }
+
+    /// Build a client for a booth, selecting the transport automatically: when
+    /// `base_url` is an `https://` endpoint and `pinned_sha256` is set, the
+    /// self-signed booth certificate is pinned to that fingerprint (LAN TLS);
+    /// otherwise a default client is used (loopback `http://`).
+    ///
+    /// Connecting to an `https://` booth without a pinned fingerprint falls
+    /// through to default CA validation, which will reject the self-signed
+    /// certificate — set `pinned_sha256` for LAN TLS.
+    ///
+    /// # Errors
+    /// Returns [`BoothError::InvalidRequest`] when a provided fingerprint is
+    /// invalid, or [`BoothError::Transport`] when the HTTP client cannot be
+    /// built.
+    pub fn connect(
+        base_url: impl Into<String>,
+        token: Option<String>,
+        pinned_sha256: Option<&str>,
+    ) -> Result<Self> {
+        let base_url = base_url.into();
+        let is_https = base_url
+            .trim_start()
+            .get(..6)
+            .is_some_and(|scheme| scheme.eq_ignore_ascii_case("https:"));
+        match pinned_sha256.map(str::trim).filter(|fp| !fp.is_empty()) {
+            Some(fingerprint) if is_https => Self::with_pinned_tls(base_url, token, fingerprint),
+            _ => Self::new(base_url, token),
+        }
+    }
 }
 
 impl<T: BoothTransport> BoothClient<T> {
@@ -476,5 +523,35 @@ mod tests {
         let client = BoothClient::with_transport(transport, None);
         client.health().await.unwrap();
         assert_eq!(client.transport.last_call().bearer, None);
+    }
+
+    const VALID_FINGERPRINT: &str =
+        "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff";
+
+    #[test]
+    fn connect_builds_plain_client_for_loopback_http() {
+        assert!(BoothClient::connect("http://127.0.0.1:8080", None, None).is_ok());
+    }
+
+    #[test]
+    fn connect_pins_tls_for_https_with_fingerprint() {
+        assert!(
+            BoothClient::connect("https://booth.ts.net:8443", None, Some(VALID_FINGERPRINT))
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn connect_ignores_fingerprint_for_http() {
+        // A fingerprint with a plaintext URL should not attempt TLS pinning, so
+        // even an invalid fingerprint string is harmless here.
+        assert!(BoothClient::connect("http://127.0.0.1:8080", None, Some("not-hex")).is_ok());
+    }
+
+    #[test]
+    fn connect_rejects_invalid_fingerprint_over_https() {
+        let err =
+            BoothClient::connect("https://booth.ts.net:8443", None, Some("not-hex")).unwrap_err();
+        assert!(matches!(err, BoothError::InvalidRequest(_)));
     }
 }
