@@ -840,7 +840,6 @@ fn push_timeline_lines(
     }
 }
 
-/// A single timeline row: clock time and the event type.
 /// Render the Events screen: a master list of events beside a detail pane.
 fn render_events(app: &App, frame: &mut Frame, area: Rect) {
     let theme = app.theme();
@@ -998,6 +997,7 @@ fn event_type_color(theme: &Theme, event_type: BoothEventType) -> Color {
     }
 }
 
+/// A single timeline row: clock time and the event type.
 fn timeline_line(theme: &Theme, event: &BoothEventRecord) -> Line<'static> {
     Line::from(vec![
         Span::styled(
