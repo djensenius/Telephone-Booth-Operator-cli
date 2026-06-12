@@ -80,6 +80,9 @@ fn status_hints(app: &App) -> &'static str {
         Screen::Questions => "  ↑/↓ select | r reload | Tab/Right next | 1-9 jump | q quit",
         Screen::Sessions => "  ↑/↓ select | r reload | Tab/Right next | 1-9 jump | q quit",
         Screen::Stats => "  r reload | w window | Tab/Right next | 1-9 jump | q quit",
+        Screen::LiveSystem => {
+            "  r refresh | Tab/Right next | Shift-Tab/Left prev | 1-9 jump | q quit"
+        }
         _ => "  Tab/Right next | Shift-Tab/Left prev | 1-9 jump | q quit",
     }
 }

@@ -5,9 +5,9 @@ use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
 
 use tbo_core::domain::{
-    BoothEventList, BoothStatus, CallSessionDetail, CallSessionList, Message, MessageList,
-    MessageStatus, OperatorMe, QuestionList, QuestionStatus, StatsOverview, StatsWindow,
-    StatusHistory, TranscriptionList,
+    BoothEventList, BoothStatus, BoothSystemSnapshotList, CallSessionDetail, CallSessionList,
+    Message, MessageList, MessageStatus, OperatorMe, QuestionList, QuestionStatus, StatsOverview,
+    StatsWindow, StatusHistory, TranscriptionList,
 };
 
 use crate::error::{OperatorError, Result};
@@ -200,6 +200,15 @@ impl<T: HttpTransport, A: TokenProvider> OperatorClient<T, A> {
             query.push(("window", window.as_query().to_owned()));
         }
         self.get_json("/v1/stats/overview", &query, true).await
+    }
+
+    /// Latest live system snapshot for every known booth
+    /// (`GET /v1/system/current`).
+    ///
+    /// Called without a `boothId`, the server returns the stable
+    /// `{ items: [...] }` shape with one snapshot per booth.
+    pub async fn system_current(&self) -> Result<BoothSystemSnapshotList> {
+        self.get_json("/v1/system/current", &[], true).await
     }
 
     /// Resolve the bearer token, issue the request, and decode the response.
@@ -427,6 +436,29 @@ mod tests {
         let calls = transport.calls();
         assert_eq!(calls[0].path, "/v1/stats/overview");
         assert_eq!(calls[0].query, vec![("window".to_owned(), "7d".to_owned())]);
+        assert_eq!(calls[0].bearer.as_deref(), Some("token-123"));
+    }
+
+    #[tokio::test]
+    async fn system_current_lists_snapshots_with_bearer() {
+        let body = r#"{"items":[{"boothId":"booth-1","snapshot":{"cpu":{"usageRatio":0.5},"temperatureCelsius":48.5,"memory":{"totalBytes":1000,"usedBytes":400}},"receivedAt":"2026-01-01T00:00:00Z","version":"0.3.2"}]}"#;
+        let transport = FakeTransport::with_responses(vec![ok(body)]);
+        let client = authed(transport.clone());
+
+        let list = client.system_current().await.unwrap();
+
+        assert_eq!(list.items.len(), 1);
+        let envelope = &list.items[0];
+        assert_eq!(envelope.booth_id, "booth-1");
+        assert_eq!(envelope.version.as_deref(), Some("0.3.2"));
+        assert_eq!(
+            envelope.snapshot.temperature_celsius,
+            Some(48.5),
+            "temperature should decode"
+        );
+        let calls = transport.calls();
+        assert_eq!(calls[0].path, "/v1/system/current");
+        assert!(calls[0].query.is_empty());
         assert_eq!(calls[0].bearer.as_deref(), Some("token-123"));
     }
 

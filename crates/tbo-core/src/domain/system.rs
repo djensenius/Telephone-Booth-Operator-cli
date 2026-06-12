@@ -211,3 +211,12 @@ pub struct BoothSystemSnapshotEnvelope {
     #[serde(default)]
     pub version: Option<String>,
 }
+
+/// List of per-booth live system snapshots (`GET /v1/system/current` with no
+/// `boothId`, which returns every cached booth).
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BoothSystemSnapshotList {
+    /// One latest snapshot per known booth.
+    pub items: Vec<BoothSystemSnapshotEnvelope>,
+}
