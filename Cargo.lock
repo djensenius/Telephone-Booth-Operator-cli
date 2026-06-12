@@ -1320,6 +1320,7 @@ version = "0.23.40"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ef86cd5876211988985292b91c96a8f2d298df24e75989a43a3c73f2d4d8168b"
 dependencies = [
+ "log",
  "once_cell",
  "ring",
  "rustls-pki-types",
@@ -1648,9 +1649,12 @@ dependencies = [
 name = "tbo-booth-client"
 version = "0.1.0"
 dependencies = [
+ "hex",
  "reqwest",
+ "rustls",
  "serde",
  "serde_json",
+ "sha2",
  "tbo-core",
  "tbo-metrics",
  "thiserror 2.0.18",

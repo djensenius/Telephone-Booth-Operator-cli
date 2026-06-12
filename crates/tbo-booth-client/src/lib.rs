@@ -6,12 +6,14 @@
 //! history, and the simulate control endpoints. The client is generic over a
 //! [`BoothTransport`] so it can be unit-tested without a network.
 //!
-//! The telemetry WebSocket and the LAN fingerprint-pinned TLS transport land
-//! in a follow-up change; this module is the REST + metrics foundation.
+//! The telemetry WebSocket lands in a follow-up change; this module provides
+//! the REST + metrics foundation and the LAN fingerprint-pinned TLS transport
+//! (see [`tls`]).
 
 pub mod client;
 pub mod error;
 pub mod model;
+pub mod tls;
 pub mod transport;
 
 pub use client::BoothClient;
@@ -21,4 +23,5 @@ pub use model::{
     GpioPinSnapshot, GpioSnapshot, HealthResponse, LogEntry, OperatorConfigRedacted,
     SimulateResponse, StatusSnapshot, TelemetryEvent, TelemetryRecord,
 };
+pub use tls::pinned_tls_config;
 pub use transport::{BoothTransport, HttpResponse, ReqwestBoothTransport};

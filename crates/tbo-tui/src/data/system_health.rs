@@ -52,7 +52,11 @@ impl SystemHealthController<ReqwestBoothTransport> {
     /// # Errors
     /// Returns an error when the booth HTTP client cannot be constructed.
     pub fn from_config(booth: &BoothConfig) -> BoothResult<Self> {
-        let client = BoothClient::new(booth.debug_base_url.clone(), booth.debug_token.clone())?;
+        let client = BoothClient::connect(
+            booth.debug_base_url.clone(),
+            booth.debug_token.clone(),
+            booth.pinned_sha256.as_deref(),
+        )?;
         let label = booth.name.clone().unwrap_or_else(|| booth.id.clone());
         Ok(Self::new(label, client))
     }

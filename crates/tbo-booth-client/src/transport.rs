@@ -76,14 +76,34 @@ impl ReqwestBoothTransport {
 
     /// Wrap an existing [`reqwest::Client`] rooted at `base_url`.
     ///
-    /// The custom-TLS (fingerprint-pinned) client lands in a later change; this
-    /// constructor lets that client be injected once it exists.
+    /// Lets a custom client (e.g. the fingerprint-pinned LAN client built by
+    /// [`Self::pinned`]) be injected.
     #[must_use]
     pub fn from_client(client: reqwest::Client, base_url: impl Into<String>) -> Self {
         Self {
             client,
             base_url: base_url.into(),
         }
+    }
+
+    /// Build a transport for a booth LAN HTTPS endpoint that trusts the
+    /// self-signed certificate by its pinned SHA-256 `fingerprint`.
+    ///
+    /// See [`crate::tls::pinned_tls_config`] for the accepted fingerprint
+    /// formats and the trust model.
+    ///
+    /// # Errors
+    /// Returns [`BoothError::InvalidRequest`] when `fingerprint` is not a valid
+    /// 32-byte hex digest, or [`BoothError::Transport`] when the HTTP client
+    /// cannot be constructed.
+    pub fn pinned(base_url: impl Into<String>, fingerprint: &str) -> Result<Self> {
+        let config = crate::tls::pinned_tls_config(fingerprint)?;
+        let client = reqwest::Client::builder()
+            .user_agent(concat!("tb-operator/", env!("CARGO_PKG_VERSION")))
+            .use_preconfigured_tls(config)
+            .build()
+            .map_err(|err| BoothError::Transport(err.to_string()))?;
+        Ok(Self::from_client(client, base_url))
     }
 
     /// Join `path` onto the configured base URL.
