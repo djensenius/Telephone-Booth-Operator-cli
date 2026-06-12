@@ -12,7 +12,7 @@ use tokio::time::Duration;
 use crate::auth::{AuthController, AuthPhase};
 use crate::data::{
     MessagesController, QuestionsController, SessionTokenProvider, SessionsController,
-    SharedSession, StatusController,
+    SharedSession, StatsController, StatusController,
 };
 use crate::event::{AppEvent, EventLoop};
 use crate::tui::Tui;
@@ -35,6 +35,7 @@ pub struct App {
     messages: MessagesController,
     questions: QuestionsController,
     sessions: SessionsController,
+    stats: StatsController,
     should_quit: bool,
 }
 
@@ -66,7 +67,7 @@ impl App {
         let status = StatusController::new(api.clone());
         let messages = MessagesController::new(api.clone());
         let questions = QuestionsController::new(api.clone());
-        let sessions = SessionsController::new(api);
+        let sessions = SessionsController::new(api.clone());
 
         Ok(Self {
             config,
@@ -78,6 +79,7 @@ impl App {
             messages,
             questions,
             sessions,
+            stats: StatsController::new(api),
             should_quit: false,
         })
     }
@@ -165,6 +167,12 @@ impl App {
         &self.sessions
     }
 
+    /// The statistics controller (drives the Stats screen).
+    #[must_use]
+    pub fn stats(&self) -> &StatsController {
+        &self.stats
+    }
+
     /// Run the draw/event loop until the user quits.
     pub async fn run(mut self, terminal: &mut Tui) -> Result<()> {
         let mut events = EventLoop::new(TICK);
@@ -177,6 +185,7 @@ impl App {
                     self.messages.tick(self.screen == Screen::Messages);
                     self.questions.tick(self.screen == Screen::Questions);
                     self.sessions.tick(self.screen == Screen::Sessions);
+                    self.stats.tick(self.screen == Screen::Stats);
                     self.toasts.prune();
                 }
                 AppEvent::Key(key) => self.on_key(key),
@@ -208,6 +217,7 @@ impl App {
             KeyCode::Down | KeyCode::Char('j') => self.select_next_active(),
             KeyCode::Up | KeyCode::Char('k') => self.select_prev_active(),
             KeyCode::Char('r' | 'R') => self.refresh_active(),
+            KeyCode::Char('w' | 'W') if self.screen == Screen::Stats => self.stats.cycle_window(),
             KeyCode::Char('l' | 'L') if self.screen == Screen::Settings => self.begin_login(),
             KeyCode::Char('o' | 'O') if self.screen == Screen::Settings => {
                 self.auth.sign_out(&mut self.toasts);
@@ -224,6 +234,7 @@ impl App {
             Screen::Messages => self.messages.refresh(),
             Screen::Questions => self.questions.refresh(),
             Screen::Sessions => self.sessions.refresh(),
+            Screen::Stats => self.stats.refresh(),
             _ => {}
         }
     }

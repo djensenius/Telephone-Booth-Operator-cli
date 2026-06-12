@@ -16,7 +16,7 @@ use time::format_description::well_known::Rfc3339;
 use tbo_core::domain::{
     BoothEventRecord, BoothEventType, BoothState, BoothStatus, CallOutcome, CallSession,
     CallSessionDetail, Message, MessageStatus, Moderation, ModerationRecommendation, Question,
-    QuestionStatus, RuntimeMode, Transcription, TranscriptionStatus,
+    QuestionStatus, RuntimeMode, StatsOverview, StatsWindow, Transcription, TranscriptionStatus,
 };
 
 use crate::app::App;
@@ -179,6 +179,9 @@ pub fn render(app: &App, frame: &mut Frame, area: Rect) {
         Screen::Messages => render_messages(app, frame, area),
         Screen::Questions => render_questions(app, frame, area),
         Screen::Sessions => render_sessions(app, frame, area),
+        Screen::Stats => {
+            render_paragraph(frame, area, theme, "Statistics", stats_lines(app, theme));
+        }
         Screen::Status => render_paragraph(frame, area, theme, "Status", status_lines(app, theme)),
         Screen::Settings => {
             render_paragraph(frame, area, theme, "Settings", settings_lines(app, theme));
@@ -884,6 +887,280 @@ fn clock_time(at: OffsetDateTime) -> String {
     }
 }
 
+/// Body lines for the Statistics screen.
+fn stats_lines(app: &App, theme: &Theme) -> Vec<Line<'static>> {
+    let controller = app.stats();
+    match controller.state() {
+        Remote::Ready { value, fetched_at } => {
+            stats_ready_lines(theme, value, *fetched_at, controller.is_refreshing())
+        }
+        other => {
+            let mut lines = vec![header(theme, Screen::Stats.title()), Line::raw("")];
+            lines.push(kv_line(
+                theme,
+                "Window:    ",
+                stats_window_label(controller.window()).to_owned(),
+            ));
+            lines.push(Line::raw(""));
+            match other {
+                Remote::Failed { error, at } => {
+                    lines.push(Line::from(Span::styled(
+                        format!("Failed to load statistics: {error}"),
+                        Style::new().fg(theme.error),
+                    )));
+                    lines.push(note_line(theme, format!("Last attempt {}.", ago(*at))));
+                    lines.push(hint_line(theme, "Press r to retry."));
+                }
+                _ => lines.push(note_line(theme, "Loading statistics…".to_owned())),
+            }
+            lines
+        }
+    }
+}
+
+/// The full statistics dashboard for a loaded overview.
+fn stats_ready_lines(
+    theme: &Theme,
+    overview: &StatsOverview,
+    fetched_at: Instant,
+    refreshing: bool,
+) -> Vec<Line<'static>> {
+    let mut lines = vec![header(theme, Screen::Stats.title()), Line::raw("")];
+
+    lines.push(kv_line(
+        theme,
+        "Window:    ",
+        stats_window_label(overview.window).to_owned(),
+    ));
+    let range = overview.range_start.map_or_else(
+        || format!("up to {}", short_time(overview.range_end)),
+        |start| format!("{} → {}", short_time(start), short_time(overview.range_end)),
+    );
+    lines.push(kv_line(theme, "Range:     ", range));
+    if let Some(last) = overview.last_activity_at {
+        lines.push(kv_line(theme, "Activity:  ", format_ts(last)));
+    }
+
+    let calls = &overview.calls;
+    lines.push(Line::raw(""));
+    lines.push(subheader(theme, "Calls"));
+    lines.push(kv_line(theme, "Total:     ", calls.total.to_string()));
+    lines.push(kv_line(
+        theme,
+        "Completed: ",
+        format!(
+            "{} ({})",
+            calls.completed,
+            percent(calls.completed, calls.total)
+        ),
+    ));
+    if calls.in_progress > 0 {
+        lines.push(kv_line(theme, "In flight: ", calls.in_progress.to_string()));
+    }
+    if let Some(avg) = calls.average_duration_ms {
+        lines.push(kv_line(theme, "Avg call:  ", format_millis_f64(avg)));
+    }
+    if let Some(longest) = calls.longest_duration_ms {
+        lines.push(kv_line(theme, "Longest:   ", format_millis_f64(longest)));
+    }
+    push_count_map(&mut lines, theme, &calls.outcomes);
+
+    let messages = &overview.messages;
+    lines.push(Line::raw(""));
+    lines.push(subheader(theme, "Messages"));
+    lines.push(kv_line(theme, "Total:     ", messages.total.to_string()));
+    if let Some(avg) = messages.average_duration_ms {
+        lines.push(kv_line(theme, "Avg len:   ", format_millis_f64(avg)));
+    }
+    push_count_map(&mut lines, theme, &messages.by_status);
+
+    let pickups = &overview.pickups_hangups;
+    lines.push(Line::raw(""));
+    lines.push(subheader(theme, "Activity"));
+    lines.push(kv_line(
+        theme,
+        "Playbacks: ",
+        overview.playback.total_playbacks.to_string(),
+    ));
+    lines.push(kv_line(theme, "Pickups:   ", pickups.pickups.to_string()));
+    lines.push(kv_line(theme, "Hangups:   ", pickups.hangups.to_string()));
+    if !pickups.digits_dialed.is_empty() {
+        let digits = pickups
+            .digits_dialed
+            .iter()
+            .map(|(digit, count)| format!("{digit}:{count}"))
+            .collect::<Vec<_>>()
+            .join("  ");
+        lines.push(kv_line(theme, "Digits:    ", digits));
+    }
+
+    let uploads = &overview.uploads;
+    lines.push(Line::raw(""));
+    lines.push(subheader(theme, "Uploads"));
+    lines.push(kv_line(theme, "Succeeded: ", uploads.succeeded.to_string()));
+    lines.push(kv_line(theme, "Failed:    ", uploads.failed.to_string()));
+    if let Some(rate) = uploads.failure_rate {
+        lines.push(kv_line(
+            theme,
+            "Fail rate: ",
+            format!("{:.1}%", rate * 100.0),
+        ));
+    }
+
+    lines.push(Line::raw(""));
+    lines.push(subheader(theme, "When"));
+    let busy_hour = overview
+        .busiest
+        .hour
+        .map_or_else(|| "—".to_owned(), |hour| format!("{hour:02}:00 UTC"));
+    lines.push(kv_line(theme, "Busy hour: ", busy_hour));
+    let busy_day = overview.busiest.day_of_week.map_or("—", day_of_week_label);
+    lines.push(kv_line(theme, "Busy day:  ", busy_day.to_owned()));
+    if !overview.hourly.is_empty() {
+        let mut by_hour = [0_u64; 24];
+        for bucket in &overview.hourly {
+            if let Some(slot) = by_hour.get_mut(bucket.hour as usize) {
+                *slot = bucket.calls;
+            }
+        }
+        lines.push(kv_line(theme, "Calls/hr:  ", sparkline(&by_hour)));
+        lines.push(note_line(
+            theme,
+            "(per hour, 00–23 UTC; leftmost = midnight)".to_owned(),
+        ));
+    }
+
+    if !overview.top_questions.is_empty() {
+        lines.push(Line::raw(""));
+        lines.push(subheader(theme, "Top questions"));
+        for question in overview.top_questions.iter().take(5) {
+            lines.push(Line::from(vec![
+                Span::styled(
+                    format!("{:>4}  ", question.message_count),
+                    Style::new().fg(theme.accent),
+                ),
+                Span::raw(truncate(&question.prompt, 60)),
+            ]));
+        }
+    }
+
+    if !overview.booth_breakdown.is_empty() {
+        lines.push(Line::raw(""));
+        lines.push(subheader(theme, "Booths"));
+        for booth in &overview.booth_breakdown {
+            let messages = booth
+                .messages
+                .map_or_else(String::new, |count| format!(", {count} msgs"));
+            lines.push(Line::from(vec![
+                Span::styled(format!("{}  ", booth.booth_id), Style::new().fg(theme.dim)),
+                Span::raw(format!("{} calls{messages}", booth.calls)),
+            ]));
+        }
+    }
+
+    lines.push(Line::raw(""));
+    if refreshing {
+        lines.push(note_line(theme, "Refreshing…".to_owned()));
+    } else {
+        lines.push(note_line(
+            theme,
+            format!(
+                "Fetched {} · generated {}.",
+                ago(fetched_at),
+                format_ts(overview.generated_at)
+            ),
+        ));
+    }
+    lines
+}
+
+/// Human-readable label for a statistics window.
+fn stats_window_label(window: StatsWindow) -> &'static str {
+    match window {
+        StatsWindow::Day => "Last 24 hours",
+        StatsWindow::Week => "Last 7 days",
+        StatsWindow::Month => "Last 30 days",
+        StatsWindow::All => "All time",
+    }
+}
+
+/// Name of a day-of-week index (`0` = Sunday).
+fn day_of_week_label(day: u8) -> &'static str {
+    match day {
+        0 => "Sunday",
+        1 => "Monday",
+        2 => "Tuesday",
+        3 => "Wednesday",
+        4 => "Thursday",
+        5 => "Friday",
+        6 => "Saturday",
+        _ => "—",
+    }
+}
+
+/// Append a dim, indented `key: count` line for each entry of a count map.
+fn push_count_map(
+    lines: &mut Vec<Line<'static>>,
+    theme: &Theme,
+    map: &std::collections::BTreeMap<String, u64>,
+) {
+    for (key, count) in map {
+        lines.push(Line::from(vec![
+            Span::styled(
+                format!("  {:<11}", humanize_key(key)),
+                Style::new().fg(theme.dim),
+            ),
+            Span::raw(count.to_string()),
+        ]));
+    }
+}
+
+/// Replace separators in an enum-style key with spaces for display.
+fn humanize_key(key: &str) -> String {
+    key.replace(['_', '-'], " ")
+}
+
+/// An integer percentage of `part` out of `whole` (e.g. `75%`).
+fn percent(part: u64, whole: u64) -> String {
+    if whole == 0 {
+        return "0%".to_owned();
+    }
+    format!("{}%", part.saturating_mul(100) / whole)
+}
+
+/// Format a millisecond duration held as `f64` (e.g. `1m 05s`, `4.2s`).
+fn format_millis_f64(ms: f64) -> String {
+    if !ms.is_finite() || ms < 0.0 {
+        return "—".to_owned();
+    }
+    // Round to whole seconds first so splitting into minutes/seconds can never
+    // produce a carry like "1m 60s".
+    let total_seconds = (ms / 1000.0).round();
+    if total_seconds >= 60.0 {
+        let minutes = (total_seconds / 60.0).floor();
+        let remainder = total_seconds - minutes * 60.0;
+        format!("{minutes:.0}m {remainder:02.0}s")
+    } else {
+        format!("{:.1}s", ms / 1000.0)
+    }
+}
+
+/// Render a slice of counts as a compact Unicode bar sparkline.
+fn sparkline(values: &[u64]) -> String {
+    const BARS: [char; 8] = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
+    let max = values.iter().copied().max().unwrap_or(0);
+    if max == 0 {
+        return BARS[0].to_string().repeat(values.len());
+    }
+    values
+        .iter()
+        .map(|&value| {
+            let index = usize::try_from(value.saturating_mul(7) / max).unwrap_or(7);
+            BARS[index.min(7)]
+        })
+        .collect()
+}
+
 /// The title header line for a screen body.
 fn header(theme: &Theme, title: &'static str) -> Line<'static> {
     Line::from(Span::styled(
@@ -1161,7 +1438,7 @@ fn format_expiry(expires_at: Option<OffsetDateTime>) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::Screen;
+    use super::{Screen, format_millis_f64, percent, sparkline};
 
     #[test]
     fn index_round_trips_for_every_screen() {
@@ -1188,5 +1465,31 @@ mod tests {
             assert!(!screen.short().is_empty());
             assert!(!screen.description().is_empty());
         }
+    }
+
+    #[test]
+    fn format_millis_never_carries_to_sixty_seconds() {
+        // 119_500ms rounds to 120s, which must render as "2m 00s", not "1m 60s".
+        assert_eq!(format_millis_f64(119_500.0), "2m 00s");
+        assert_eq!(format_millis_f64(65_000.0), "1m 05s");
+        assert_eq!(format_millis_f64(4_200.0), "4.2s");
+        assert_eq!(format_millis_f64(-1.0), "—");
+        assert_eq!(format_millis_f64(f64::NAN), "—");
+    }
+
+    #[test]
+    fn percent_handles_zero_denominator() {
+        assert_eq!(percent(0, 0), "0%");
+        assert_eq!(percent(3, 4), "75%");
+        assert_eq!(percent(2, 2), "100%");
+    }
+
+    #[test]
+    fn sparkline_scales_and_handles_empty_max() {
+        assert_eq!(sparkline(&[0, 0, 0]), "▁▁▁");
+        let line = sparkline(&[0, 4, 8]);
+        assert_eq!(line.chars().count(), 3);
+        assert!(line.starts_with('▁'));
+        assert!(line.ends_with('█'));
     }
 }

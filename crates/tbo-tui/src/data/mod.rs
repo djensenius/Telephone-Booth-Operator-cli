@@ -10,6 +10,7 @@
 mod messages;
 mod questions;
 mod sessions;
+mod stats;
 mod status;
 
 use std::sync::Arc;
@@ -23,6 +24,7 @@ use tbo_operator_client::{OperatorClient, OperatorError, ReqwestTransport, Resul
 pub use messages::MessagesController;
 pub use questions::QuestionsController;
 pub use sessions::SessionsController;
+pub use stats::StatsController;
 pub use status::StatusController;
 
 /// The session manager shared between the auth controller and the data layer.
