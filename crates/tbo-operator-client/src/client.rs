@@ -1,18 +1,22 @@
 //! The operator API client: typed read endpoints over an [`HttpTransport`].
 
 use serde::de::DeserializeOwned;
+use std::collections::VecDeque;
 use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
 
+use futures::stream::{BoxStream, Stream, StreamExt};
+
 use tbo_core::domain::{
-    BoothEventList, BoothStatus, BoothSystemSnapshotList, CallSessionDetail, CallSessionList,
-    Message, MessageList, MessageStatus, OperatorMe, QuestionList, QuestionStatus, StatsOverview,
-    StatsWindow, StatusHistory, TranscriptionList,
+    BoothEventList, BoothEventRecord, BoothStatus, BoothSystemSnapshotList, CallSessionDetail,
+    CallSessionList, Message, MessageList, MessageStatus, OperatorMe, QuestionList, QuestionStatus,
+    StatsOverview, StatsWindow, StatusHistory, TranscriptionList,
 };
 
 use crate::error::{OperatorError, Result};
+use crate::sse::SseParser;
 use crate::token::{StaticTokenProvider, TokenProvider};
-use crate::transport::{HttpTransport, ReqwestTransport};
+use crate::transport::{HttpTransport, ReqwestTransport, SseTransport};
 
 /// Filter and pagination options for [`OperatorClient::events`] and the live
 /// event stream.
@@ -234,6 +238,77 @@ impl<T: HttpTransport, A: TokenProvider> OperatorClient<T, A> {
             }),
         }
     }
+}
+
+/// The SSE `event:` name carrying a JSON [`BoothEventRecord`] payload.
+const BOOTH_EVENT: &str = "booth-event";
+
+impl<T: SseTransport, A: TokenProvider> OperatorClient<T, A> {
+    /// Open the live event tail (`GET /v1/events/stream`).
+    ///
+    /// Returns a stream that yields each `booth-event` frame decoded into a
+    /// [`BoothEventRecord`]; the `ready` handshake and `ping` heartbeats are
+    /// transparently skipped. The stream ends when the connection closes.
+    /// `boothId`, `sessionId`, and `type` filters from `filter` are forwarded;
+    /// pagination fields (`since`/`until`/`cursor`/`limit`) do not apply.
+    ///
+    /// # Errors
+    /// Returns [`OperatorError::Unauthenticated`] when signed out, or a
+    /// transport/HTTP error if the stream cannot be opened.
+    pub async fn events_stream(&self, filter: &EventQuery) -> Result<BoothEventStream> {
+        let bearer = self.auth.access_token().await?;
+        if bearer.is_none() {
+            return Err(OperatorError::Unauthenticated);
+        }
+        let mut query = Vec::new();
+        if let Some(booth_id) = &filter.booth_id {
+            query.push(("boothId", booth_id.clone()));
+        }
+        if let Some(session_id) = &filter.session_id {
+            query.push(("sessionId", session_id.clone()));
+        }
+        for event_type in &filter.types {
+            query.push(("type", event_type.clone()));
+        }
+        let bytes = self
+            .transport
+            .get_sse("/v1/events/stream", &query, bearer.as_deref())
+            .await?;
+        Ok(decode_event_records(bytes).boxed())
+    }
+}
+
+/// A boxed stream of live [`BoothEventRecord`]s from the operator event tail.
+pub type BoothEventStream = BoxStream<'static, Result<BoothEventRecord>>;
+
+/// Adapt a raw SSE byte stream into a stream of [`BoothEventRecord`]s, decoding
+/// `booth-event` frames and skipping `ready`/`ping` and other event types.
+fn decode_event_records<S>(bytes: S) -> impl Stream<Item = Result<BoothEventRecord>> + Send
+where
+    S: Stream<Item = Result<Vec<u8>>> + Send + Unpin + 'static,
+{
+    let state = (bytes, SseParser::new(), VecDeque::new());
+    futures::stream::unfold(state, |(mut bytes, mut parser, mut pending)| async move {
+        loop {
+            if let Some(item) = pending.pop_front() {
+                return Some((item, (bytes, parser, pending)));
+            }
+            match bytes.next().await {
+                Some(Ok(chunk)) => {
+                    for event in parser.push(&chunk) {
+                        if event.event.as_deref() == Some(BOOTH_EVENT) {
+                            pending.push_back(
+                                serde_json::from_str::<BoothEventRecord>(&event.data)
+                                    .map_err(|err| OperatorError::Decode(err.to_string())),
+                            );
+                        }
+                    }
+                }
+                Some(Err(err)) => return Some((Err(err), (bytes, parser, pending))),
+                None => return None,
+            }
+        }
+    })
 }
 
 /// Append a `limit` query param when present.
@@ -494,5 +569,98 @@ mod tests {
 
         let unauthorized = client.message("denied").await.unwrap_err();
         assert!(matches!(unauthorized, OperatorError::Unauthorized(401)));
+    }
+
+    /// An SSE transport that replays canned byte chunks and records the query.
+    #[derive(Clone)]
+    struct FakeSseTransport {
+        chunks: Vec<Vec<u8>>,
+        last_query: Arc<Mutex<Vec<(String, String)>>>,
+    }
+
+    impl FakeSseTransport {
+        fn new(chunks: &[&str]) -> Self {
+            Self {
+                chunks: chunks.iter().map(|c| c.as_bytes().to_vec()).collect(),
+                last_query: Arc::new(Mutex::new(Vec::new())),
+            }
+        }
+
+        fn query(&self) -> Vec<(String, String)> {
+            self.last_query.lock().unwrap().clone()
+        }
+    }
+
+    impl HttpTransport for FakeSseTransport {
+        async fn get(
+            &self,
+            _path: &str,
+            _query: &[(&str, String)],
+            _bearer: Option<&str>,
+        ) -> Result<HttpResponse> {
+            Ok(HttpResponse {
+                status: 200,
+                body: String::new(),
+            })
+        }
+    }
+
+    impl SseTransport for FakeSseTransport {
+        async fn get_sse(
+            &self,
+            _path: &str,
+            query: &[(&str, String)],
+            _bearer: Option<&str>,
+        ) -> Result<crate::transport::ByteStream> {
+            *self.last_query.lock().unwrap() = query
+                .iter()
+                .map(|(k, v)| ((*k).to_owned(), v.clone()))
+                .collect();
+            let chunks = self.chunks.clone();
+            Ok(futures::stream::iter(chunks.into_iter().map(Ok)).boxed())
+        }
+    }
+
+    fn event_json(id: &str) -> String {
+        format!(
+            r#"{{"id":"{id}","eventId":"{id}","boothId":"booth-1","bootId":"boot-1","type":"call_started","occurredAt":"2026-01-01T00:00:00Z","receivedAt":"2026-01-01T00:00:01Z"}}"#
+        )
+    }
+
+    #[tokio::test]
+    async fn events_stream_decodes_booth_events_and_skips_ready_and_ping() {
+        let frame = format!(
+            "event: ready\ndata: ok\n\nid: evt-1\nevent: booth-event\ndata: {}\n\nevent: ping\ndata: t\n\n",
+            event_json("evt-1")
+        );
+        let transport = FakeSseTransport::new(&[&frame]);
+        let client =
+            OperatorClient::with_transport(transport.clone(), StaticTokenProvider::new("tok"));
+        let filter = EventQuery {
+            booth_id: Some("booth-1".to_owned()),
+            types: vec!["call_started".to_owned()],
+            ..EventQuery::default()
+        };
+
+        let mut stream = client.events_stream(&filter).await.unwrap();
+        let first = stream.next().await.unwrap().unwrap();
+        assert_eq!(first.id, "evt-1");
+        assert!(stream.next().await.is_none());
+
+        let query = transport.query();
+        assert!(query.iter().any(|(k, v)| k == "boothId" && v == "booth-1"));
+        assert!(
+            query
+                .iter()
+                .any(|(k, v)| k == "type" && v == "call_started")
+        );
+    }
+
+    #[tokio::test]
+    async fn events_stream_requires_authentication() {
+        let transport = FakeSseTransport::new(&[]);
+        let client = OperatorClient::with_transport(transport, StaticTokenProvider::anonymous());
+        let result = client.events_stream(&EventQuery::default()).await;
+        assert!(matches!(result, Err(OperatorError::Unauthenticated)));
     }
 }
