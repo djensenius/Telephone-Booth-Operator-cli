@@ -28,6 +28,8 @@ pub enum Intent {
     NewApiToken,
     /// Revoke the selected API token.
     RevokeApiToken,
+    /// Collect a rotary digit (0-9) and simulate dialing it on the booth.
+    SimulateDial,
 }
 
 /// What the app should do after routing a key to the active modal.
