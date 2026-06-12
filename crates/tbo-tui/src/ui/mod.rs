@@ -86,7 +86,10 @@ fn status_hints(app: &App) -> &'static str {
         return "  Esc cancel login | Tab/Right next | 1-9 jump | q quit";
     }
     match app.screen() {
-        Screen::Settings => "  L log in | O sign out | Tab/Right next | 1-9 jump | q quit",
+        Screen::Settings => {
+            "  L log in | O sign out | t theme | Tab/Right next | 1-9 jump | q quit"
+        }
+        Screen::About => "  Tab/Right next | Shift-Tab/Left prev | 1-9 jump | q quit",
         Screen::Status => "  r refresh | Tab/Right next | Shift-Tab/Left prev | 1-9 jump | q quit",
         Screen::Messages => {
             "  ↑/↓ select | a approve | x reject | t transcribe | m moderate | g translate | d delete | p play | space pause | s stop | r reload | q quit"
