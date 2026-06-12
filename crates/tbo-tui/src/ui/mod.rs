@@ -1,16 +1,18 @@
 //! Top-level rendering: tab bar, body, status bar, and toast overlay.
 
+pub mod modal;
 pub mod screens;
 pub mod theme;
 pub mod toast;
 
 use ratatui::Frame;
-use ratatui::layout::{Constraint, Layout, Rect};
+use ratatui::layout::{Constraint, Flex, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Clear, Paragraph, Tabs};
+use ratatui::widgets::{Block, Clear, Paragraph, Tabs, Wrap};
 
 use crate::app::App;
+use crate::ui::modal::Modal;
 use crate::ui::screens::Screen;
 use crate::ui::theme::Theme;
 use crate::ui::toast::{Level, Toasts};
@@ -29,6 +31,9 @@ pub fn render(app: &App, frame: &mut Frame) {
     screens::render(app, frame, body_area);
     render_status_bar(app, frame, status_area);
     render_toasts(app.toasts(), app.theme(), frame, body_area);
+    if let Some(modal) = app.modal() {
+        render_modal(modal, app.theme(), frame, body_area);
+    }
 }
 
 /// Render the top tab bar.
@@ -68,6 +73,13 @@ fn render_status_bar(app: &App, frame: &mut Frame, area: Rect) {
 
 /// Context-sensitive help text for the status bar.
 fn status_hints(app: &App) -> &'static str {
+    // A modal captures all input; show its controls regardless of screen.
+    if let Some(modal) = app.modal() {
+        return match modal {
+            Modal::Confirm(_) => "  y confirm | n/Esc cancel",
+            Modal::Prompt(_) => "  type text | Enter submit | Esc cancel",
+        };
+    }
     // A login can be cancelled from any screen, so surface the hint whenever
     // one is in progress regardless of the focused screen.
     if app.auth().is_in_progress() {
@@ -76,7 +88,9 @@ fn status_hints(app: &App) -> &'static str {
     match app.screen() {
         Screen::Settings => "  L log in | O sign out | Tab/Right next | 1-9 jump | q quit",
         Screen::Status => "  r refresh | Tab/Right next | Shift-Tab/Left prev | 1-9 jump | q quit",
-        Screen::Messages => "  ↑/↓ select | r reload | Tab/Right next | 1-9 jump | q quit",
+        Screen::Messages => {
+            "  ↑/↓ select | a approve | x reject | t transcribe | m moderate | g translate | d delete | r reload | q quit"
+        }
         Screen::Questions => "  ↑/↓ select | r reload | Tab/Right next | 1-9 jump | q quit",
         Screen::Sessions => "  ↑/↓ select | r reload | Tab/Right next | 1-9 jump | q quit",
         Screen::Events => "  ↑/↓ select | r reload | f follow | Tab/Right next | q quit",
@@ -126,4 +140,71 @@ fn render_toasts(toasts: &Toasts, theme: &Theme, frame: &mut Frame, area: Rect) 
         .title(" notices ");
     frame.render_widget(Clear, rect);
     frame.render_widget(Paragraph::new(visible).block(block), rect);
+}
+
+/// Render a centered modal overlay (confirmation or text prompt).
+fn render_modal(modal: &Modal, theme: &Theme, frame: &mut Frame, area: Rect) {
+    let (title, lines) = match modal {
+        Modal::Confirm(confirm) => (
+            confirm.title.clone(),
+            vec![
+                Line::from(Span::styled(
+                    confirm.body.clone(),
+                    Style::new().fg(theme.fg),
+                )),
+                Line::raw(""),
+                Line::from(Span::styled(
+                    "y confirm   n/Esc cancel",
+                    Style::new().fg(theme.dim),
+                )),
+            ],
+        ),
+        Modal::Prompt(prompt) => (
+            prompt.title.clone(),
+            vec![
+                Line::from(Span::styled(
+                    format!("{}:", prompt.label),
+                    Style::new().fg(theme.dim),
+                )),
+                Line::from(Span::styled(
+                    format!("{}\u{2588}", modal.input()),
+                    Style::new().fg(theme.fg),
+                )),
+                Line::raw(""),
+                Line::from(Span::styled(
+                    "Enter submit   Esc cancel",
+                    Style::new().fg(theme.dim),
+                )),
+            ],
+        ),
+    };
+
+    let width = 60.min(area.width.saturating_sub(4)).max(20);
+    let height = u16::try_from(lines.len())
+        .unwrap_or(4)
+        .saturating_add(2)
+        .min(area.height);
+    let rect = center(area, width, height);
+
+    let block = Block::bordered()
+        .border_style(Style::new().fg(theme.accent))
+        .title(format!(" {title} "));
+    frame.render_widget(Clear, rect);
+    frame.render_widget(
+        Paragraph::new(lines)
+            .wrap(Wrap { trim: false })
+            .block(block),
+        rect,
+    );
+}
+
+/// Center a `width`×`height` rectangle within `area`.
+fn center(area: Rect, width: u16, height: u16) -> Rect {
+    let horizontal = Layout::horizontal([Constraint::Length(width)])
+        .flex(Flex::Center)
+        .split(area);
+    let vertical = Layout::vertical([Constraint::Length(height)])
+        .flex(Flex::Center)
+        .split(horizontal[0]);
+    vertical[0]
 }
