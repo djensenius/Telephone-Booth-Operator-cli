@@ -660,6 +660,10 @@ impl App {
 
     /// Open a prompt for the rotary digit to simulate dialing.
     fn open_dial_prompt(&mut self) {
+        if self.debug.is_none() {
+            self.toasts.info("No booth is configured.");
+            return;
+        }
         if !self
             .debug
             .as_ref()
