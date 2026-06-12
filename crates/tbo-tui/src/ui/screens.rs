@@ -9,8 +9,12 @@ use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Paragraph, Wrap};
+use time::OffsetDateTime;
+use time::format_description::well_known::Rfc3339;
 
 use crate::app::App;
+use crate::auth::AuthPhase;
+use crate::ui::theme::Theme;
 
 /// The set of top-level screens, in tab order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -189,6 +193,7 @@ pub fn render(app: &App, frame: &mut Frame, area: Rect) {
             Span::styled("Booths:       ", Style::new().fg(theme.dim)),
             Span::raw(config.booths.len().to_string()),
         ]));
+        push_account_lines(&mut lines, theme, app.auth().phase());
     }
 
     lines.push(Line::raw(""));
@@ -202,6 +207,100 @@ pub fn render(app: &App, frame: &mut Frame, area: Rect) {
         .title(format!(" {} ", screen.title()));
     let paragraph = Paragraph::new(lines).block(block).wrap(Wrap { trim: true });
     frame.render_widget(paragraph, area);
+}
+
+/// Append the account/authentication section to the Settings body.
+fn push_account_lines(lines: &mut Vec<Line<'static>>, theme: &Theme, phase: &AuthPhase) {
+    lines.push(Line::raw(""));
+    lines.push(Line::from(Span::styled(
+        "Account",
+        Style::new().fg(theme.accent).add_modifier(Modifier::BOLD),
+    )));
+    match phase {
+        AuthPhase::SignedOut => {
+            lines.push(status_line(theme, "Status: ", "signed out", theme.dim));
+            lines.push(hint_line(theme, "Press L to log in."));
+        }
+        AuthPhase::Starting => {
+            lines.push(status_line(
+                theme,
+                "Status: ",
+                "starting login…",
+                theme.warn,
+            ));
+        }
+        AuthPhase::AwaitingApproval(pending) => {
+            lines.push(status_line(
+                theme,
+                "Status: ",
+                "awaiting approval",
+                theme.warn,
+            ));
+            lines.push(Line::from(vec![
+                Span::styled("Visit:  ", Style::new().fg(theme.dim)),
+                Span::raw(pending.verification_uri.clone()),
+            ]));
+            lines.push(Line::from(vec![
+                Span::styled("Code:   ", Style::new().fg(theme.dim)),
+                Span::styled(
+                    pending.user_code.clone(),
+                    Style::new().fg(theme.accent).add_modifier(Modifier::BOLD),
+                ),
+            ]));
+            if let Some(complete) = &pending.verification_uri_complete {
+                lines.push(Line::from(vec![
+                    Span::styled("Direct: ", Style::new().fg(theme.dim)),
+                    Span::raw(complete.clone()),
+                ]));
+            }
+            lines.push(hint_line(theme, "Press Esc to cancel."));
+        }
+        AuthPhase::SignedIn { expires_at } => {
+            lines.push(status_line(theme, "Status: ", "signed in", theme.ok));
+            lines.push(Line::from(vec![
+                Span::styled("Expires:", Style::new().fg(theme.dim)),
+                Span::raw(format!(" {}", format_expiry(*expires_at))),
+            ]));
+            lines.push(hint_line(theme, "Press O to sign out."));
+        }
+        AuthPhase::Failed(message) => {
+            lines.push(status_line(theme, "Status: ", "login failed", theme.error));
+            lines.push(Line::from(vec![
+                Span::styled("Reason: ", Style::new().fg(theme.dim)),
+                Span::raw(message.clone()),
+            ]));
+            lines.push(hint_line(theme, "Press L to try again."));
+        }
+    }
+}
+
+/// A `label`/`value` line where the value carries `color`.
+fn status_line(
+    theme: &Theme,
+    label: &'static str,
+    value: &'static str,
+    color: ratatui::style::Color,
+) -> Line<'static> {
+    Line::from(vec![
+        Span::styled(label, Style::new().fg(theme.dim)),
+        Span::styled(value, Style::new().fg(color)),
+    ])
+}
+
+/// A dim, italic hint line.
+fn hint_line(theme: &Theme, text: &'static str) -> Line<'static> {
+    Line::from(Span::styled(
+        text,
+        Style::new().fg(theme.dim).add_modifier(Modifier::ITALIC),
+    ))
+}
+
+/// Format an access-token expiry for display, falling back to `unknown`.
+fn format_expiry(expires_at: Option<OffsetDateTime>) -> String {
+    expires_at.map_or_else(
+        || "unknown".to_owned(),
+        |at| at.format(&Rfc3339).unwrap_or_else(|_| "unknown".to_owned()),
+    )
 }
 
 #[cfg(test)]

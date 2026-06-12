@@ -25,6 +25,20 @@ pub trait TokenStore: Send + Sync {
     fn clear(&self) -> Result<()>;
 }
 
+impl TokenStore for Box<dyn TokenStore> {
+    fn load(&self) -> Result<Option<StoredSession>> {
+        (**self).load()
+    }
+
+    fn save(&self, session: &StoredSession) -> Result<()> {
+        (**self).save(session)
+    }
+
+    fn clear(&self) -> Result<()> {
+        (**self).clear()
+    }
+}
+
 /// An in-memory [`TokenStore`], primarily for tests and ephemeral sessions.
 #[derive(Debug, Default)]
 pub struct InMemoryTokenStore {

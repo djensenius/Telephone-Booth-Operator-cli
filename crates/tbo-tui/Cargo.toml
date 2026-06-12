@@ -20,16 +20,22 @@ workspace = true
 
 [dependencies]
 tbo-core = { workspace = true }
+tbo-auth = { workspace = true }
 ratatui = { workspace = true }
 crossterm = { workspace = true }
 tokio = { workspace = true }
 futures = { workspace = true }
 clap = { workspace = true }
 anyhow = { workspace = true }
+time = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 tracing-appender = { workspace = true }
 directories = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
+serde_json = { workspace = true }
 
 [package.metadata.deb]
 name = "telephone-booth-operator-cli"
