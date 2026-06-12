@@ -45,8 +45,8 @@ async fn main() -> Result<()> {
     // Run the interactive setup when explicitly requested, or on first launch
     // (no config yet) when attached to a terminal that can answer prompts.
     let first_run = !config_path.exists();
-    if cli.setup || (first_run && std::io::stdin().is_terminal() && std::io::stdout().is_terminal())
-    {
+    let is_interactive_terminal = std::io::stdin().is_terminal() && std::io::stdout().is_terminal();
+    if cli.setup || (first_run && is_interactive_terminal) {
         onboarding::run(&config_path).await?;
     }
 

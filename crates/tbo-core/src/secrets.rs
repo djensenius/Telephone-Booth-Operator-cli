@@ -173,7 +173,7 @@ fn restrict_to_owner(path: &Path) -> Result<()> {
 }
 
 /// Restrict a file to owner read/write. A no-op on platforms without Unix
-/// permission bits.
+/// permission bits: returns `Ok(())` without modifying file permissions.
 #[cfg(not(unix))]
 fn restrict_to_owner(_path: &Path) -> Result<()> {
     Ok(())
