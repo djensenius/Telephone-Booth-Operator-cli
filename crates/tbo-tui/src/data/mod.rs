@@ -1,11 +1,13 @@
-//! Operator API data layer for the TUI.
+//! Backend data layer for the TUI.
 //!
 //! Bridges the `tbo-auth` session to the operator client via
 //! [`SessionTokenProvider`] and hosts the per-screen controllers that fetch and
-//! cache operator data off the UI thread. Each controller mirrors the
-//! [`AuthController`](crate::auth::AuthController) pattern: a background `tokio`
-//! task performs the request and the UI thread applies the result on each tick
-//! via `drain`, so rendering never blocks on the network.
+//! cache backend data off the UI thread — both the operator API and, for the
+//! System Health dashboard, a booth's Prometheus `/metrics` scrape. Each
+//! controller mirrors the [`AuthController`](crate::auth::AuthController)
+//! pattern: a background `tokio` task performs the request and the UI thread
+//! applies the result on each tick via `drain`, so rendering never blocks on
+//! the network.
 
 mod events;
 mod messages;
@@ -14,6 +16,7 @@ mod sessions;
 mod stats;
 mod status;
 mod system;
+mod system_health;
 mod tokens;
 
 use std::sync::Arc;
@@ -31,6 +34,7 @@ pub use sessions::SessionsController;
 pub use stats::StatsController;
 pub use status::StatusController;
 pub use system::SystemController;
+pub use system_health::SystemHealthController;
 pub use tokens::TokensController;
 
 /// The session manager shared between the auth controller and the data layer.
