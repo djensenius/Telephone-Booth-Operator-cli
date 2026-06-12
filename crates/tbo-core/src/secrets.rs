@@ -99,6 +99,28 @@ impl Secrets {
             })?;
         }
         let text = self.to_toml()?;
+        #[cfg(unix)]
+        {
+            use std::io::Write;
+            use std::os::unix::fs::OpenOptionsExt;
+
+            let mut file = std::fs::OpenOptions::new()
+                .create(true)
+                .write(true)
+                .truncate(true)
+                .mode(0o600)
+                .open(path)
+                .map_err(|source| Error::Io {
+                    path: path.to_path_buf(),
+                    source,
+                })?;
+            file.write_all(text.as_bytes())
+                .map_err(|source| Error::Io {
+                    path: path.to_path_buf(),
+                    source,
+                })?;
+        }
+        #[cfg(not(unix))]
         std::fs::write(path, text).map_err(|source| Error::Io {
             path: path.to_path_buf(),
             source,
