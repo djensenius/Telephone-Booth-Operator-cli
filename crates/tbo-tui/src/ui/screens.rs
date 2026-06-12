@@ -794,7 +794,13 @@ fn token_detail_lines(theme: &Theme, token: Option<&ApiToken>) -> Vec<Line<'stat
             token_status_badge(theme, token, now),
         ]),
         kv_line(theme, "Created:   ", format_ts(token.created_at)),
-        kv_line(theme, "Expires:   ", format_expiry(token.expires_at)),
+        kv_line(
+            theme,
+            "Expires:   ",
+            token
+                .expires_at
+                .map_or_else(|| "never".to_owned(), format_ts),
+        ),
         kv_line(
             theme,
             "Last used: ",
