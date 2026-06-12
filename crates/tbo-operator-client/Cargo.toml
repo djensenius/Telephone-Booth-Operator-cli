@@ -26,3 +26,5 @@ hex = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true }
+wiremock = { workspace = true }
+futures = { workspace = true }

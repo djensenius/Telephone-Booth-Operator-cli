@@ -83,6 +83,10 @@ crossterm = { version = "0.28", features = ["event-stream"] }
 tokio = { version = "1", features = ["full"] }
 futures = "0.3"
 clap = { version = "4", features = ["derive"] }
+# Build-time generation of the man page and shell completions shipped in the
+# .deb (see `crates/tbo-tui/build.rs`).
+clap_complete = "4"
+clap_mangen = "0.2"
 anyhow = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
@@ -109,3 +113,8 @@ hex = "0.4"
 # decoded by Symphonia (rodio's default backend); default features are off to
 # avoid pulling decoders for formats we never play.
 rodio = { version = "0.22", default-features = false, features = ["flac", "playback"] }
+
+# Dev-only: HTTP mock server for end-to-end client integration tests that
+# exercise the real reqwest transport (URL joining, bearer header, query
+# encoding, status mapping, JSON/SSE decoding) over a real socket.
+wiremock = "0.6"
