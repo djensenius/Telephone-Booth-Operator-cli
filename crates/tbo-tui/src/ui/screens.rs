@@ -15,7 +15,7 @@ use time::format_description::well_known::Rfc3339;
 
 use tbo_core::domain::{
     BoothState, BoothStatus, Message, MessageStatus, Moderation, ModerationRecommendation,
-    RuntimeMode, Transcription, TranscriptionStatus,
+    Question, QuestionStatus, RuntimeMode, Transcription, TranscriptionStatus,
 };
 
 use crate::app::App;
@@ -176,6 +176,7 @@ pub fn render(app: &App, frame: &mut Frame, area: Rect) {
     let theme = app.theme();
     match app.screen() {
         Screen::Messages => render_messages(app, frame, area),
+        Screen::Questions => render_questions(app, frame, area),
         Screen::Status => render_paragraph(frame, area, theme, "Status", status_lines(app, theme)),
         Screen::Settings => {
             render_paragraph(frame, area, theme, "Settings", settings_lines(app, theme));
@@ -496,6 +497,154 @@ fn truncate(text: &str, max: usize) -> String {
         format!("{kept}…")
     } else {
         text.to_owned()
+    }
+}
+
+/// Render the Questions screen: a master list beside a detail pane.
+fn render_questions(app: &App, frame: &mut Frame, area: Rect) {
+    let theme = app.theme();
+    let controller = app.questions();
+    match controller.state() {
+        Remote::Ready { value, fetched_at } if !value.is_empty() => {
+            let columns =
+                Layout::horizontal([Constraint::Percentage(42), Constraint::Min(24)]).split(area);
+            render_question_list(frame, columns[0], theme, value, controller.selected_index());
+
+            let mut detail = question_detail_lines(theme, controller.selected_question());
+            detail.push(Line::raw(""));
+            if controller.is_refreshing() {
+                detail.push(note_line(theme, "Refreshing…".to_owned()));
+            } else {
+                detail.push(note_line(theme, format!("Fetched {}.", ago(*fetched_at))));
+            }
+            render_paragraph(frame, columns[1], theme, "Detail", detail);
+        }
+        other => render_paragraph(
+            frame,
+            area,
+            theme,
+            "Questions",
+            questions_status_lines(theme, other),
+        ),
+    }
+}
+
+/// Body lines for the non-list Questions states (loading, empty, or failed).
+fn questions_status_lines(theme: &Theme, state: &Remote<Vec<Question>>) -> Vec<Line<'static>> {
+    let mut lines = vec![header(theme, Screen::Questions.title()), Line::raw("")];
+    match state {
+        Remote::Idle | Remote::Loading => lines.push(hint_line(theme, "Loading questions…")),
+        Remote::Ready { .. } => {
+            lines.push(note_line(theme, "No questions.".to_owned()));
+            lines.push(hint_line(theme, "Press r to reload."));
+        }
+        Remote::Failed { error, at } => {
+            lines.push(Line::from(Span::styled(
+                format!("Failed to load questions {}.", ago(*at)),
+                Style::new().fg(theme.error),
+            )));
+            lines.push(Line::from(vec![
+                Span::styled("Reason: ", Style::new().fg(theme.dim)),
+                Span::raw(error.clone()),
+            ]));
+            lines.push(hint_line(
+                theme,
+                "Press r to retry; sign in via Settings if unauthorized.",
+            ));
+        }
+    }
+    lines
+}
+
+/// Render the scrollable list of questions with the selected row highlighted.
+fn render_question_list(
+    frame: &mut Frame,
+    area: Rect,
+    theme: &Theme,
+    questions: &[Question],
+    selected: usize,
+) {
+    let items: Vec<ListItem> = questions
+        .iter()
+        .map(|question| {
+            ListItem::new(Line::from(vec![
+                question_status_badge(theme, question.status),
+                Span::raw(" "),
+                Span::raw(truncate(&question.prompt.replace('\n', " "), 40)),
+            ]))
+        })
+        .collect();
+    let list = List::new(items)
+        .block(
+            Block::bordered()
+                .border_style(Style::new().fg(theme.dim))
+                .title(" Questions "),
+        )
+        .highlight_style(
+            Style::new()
+                .fg(theme.accent)
+                .add_modifier(Modifier::REVERSED | Modifier::BOLD),
+        )
+        .highlight_symbol("> ");
+    let mut list_state = ListState::default();
+    list_state.select(Some(selected));
+    frame.render_stateful_widget(list, area, &mut list_state);
+}
+
+/// Build the detail-pane lines for the selected question.
+fn question_detail_lines(theme: &Theme, question: Option<&Question>) -> Vec<Line<'static>> {
+    let Some(question) = question else {
+        return vec![
+            header(theme, "Question"),
+            Line::raw(""),
+            hint_line(theme, "Select a question."),
+        ];
+    };
+
+    let mut lines = vec![
+        header(theme, "Question"),
+        Line::raw(""),
+        kv_line(theme, "ID:       ", question.id.clone()),
+        Line::from(vec![
+            Span::styled("Status:   ", Style::new().fg(theme.dim)),
+            question_status_badge(theme, question.status),
+        ]),
+        kv_line(theme, "Created:  ", format_ts(question.created_at)),
+    ];
+    if let Some(duration_ms) = question.audio.duration_ms {
+        lines.push(kv_line(theme, "Duration: ", format_duration(duration_ms)));
+    }
+
+    lines.push(Line::raw(""));
+    lines.push(subheader(theme, "Prompt"));
+    lines.push(Line::raw(question.prompt.clone()));
+
+    lines
+}
+
+/// Colored badge for a question publication status.
+fn question_status_badge(theme: &Theme, status: QuestionStatus) -> Span<'static> {
+    let (label, color) = match status {
+        QuestionStatus::Draft => ("draft", theme.dim),
+        QuestionStatus::Active => ("active", theme.ok),
+        QuestionStatus::Archived => ("archived", theme.warn),
+    };
+    badge(label, color)
+}
+
+/// Format an audio duration in milliseconds as a human-readable string.
+fn format_duration(duration_ms: i64) -> String {
+    if duration_ms < 0 {
+        return "—".to_owned();
+    }
+    let total_secs = duration_ms / 1000;
+    let millis = duration_ms % 1000;
+    let minutes = total_secs / 60;
+    let seconds = total_secs % 60;
+    if minutes > 0 {
+        format!("{minutes}m {seconds}s")
+    } else {
+        format!("{seconds}.{millis:03}s")
     }
 }
 
