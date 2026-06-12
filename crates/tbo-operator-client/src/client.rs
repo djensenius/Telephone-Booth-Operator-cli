@@ -202,7 +202,7 @@ impl<T: HttpTransport, A: TokenProvider> OperatorClient<T, A> {
         }
         let response = self.transport.get(path, query, bearer.as_deref()).await?;
         match response.status {
-            status if (200..300).contains(&status) => serde_json::from_str(&response.body)
+            _ if response.is_success() => serde_json::from_str(&response.body)
                 .map_err(|err| OperatorError::Decode(err.to_string())),
             401 | 403 => Err(OperatorError::Unauthorized(response.status)),
             404 => Err(OperatorError::NotFound),
