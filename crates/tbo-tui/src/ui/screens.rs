@@ -29,6 +29,7 @@ use tbo_core::domain::{
 };
 use tbo_metrics::{BoothMetrics, MetricsHistory};
 
+use super::format_login_expiry;
 use crate::app::App;
 use crate::auth::AuthPhase;
 use crate::data::{DebugController, Remote, SystemHealthController};
@@ -84,6 +85,7 @@ const PAYLOAD_MAX_LINES: usize = 40;
 
 impl Screen {
     /// All screens in tab order.
+    #[cfg(test)]
     #[must_use]
     pub fn all() -> &'static [Screen] {
         &ALL
@@ -99,6 +101,40 @@ impl Screen {
     #[must_use]
     pub fn from_index(index: usize) -> Option<Screen> {
         ALL.get(index).copied()
+    }
+
+    /// The keyboard shortcut shown in the screen palette.
+    #[must_use]
+    pub const fn nav_key(self) -> char {
+        match self {
+            Screen::Status => '1',
+            Screen::Messages => '2',
+            Screen::Questions => '3',
+            Screen::Events => '4',
+            Screen::Sessions => '5',
+            Screen::Stats => '6',
+            Screen::LiveSystem => '7',
+            Screen::SystemHealth => '8',
+            Screen::Debug => '9',
+            Screen::Tokens => '0',
+            Screen::Settings => 's',
+            Screen::About => 'a',
+        }
+    }
+
+    /// Resolve a palette keyboard shortcut to a screen.
+    #[must_use]
+    pub fn from_nav_key(key: char) -> Option<Screen> {
+        match key.to_ascii_lowercase() {
+            '1'..='9' => key
+                .to_digit(10)
+                .and_then(|digit| usize::try_from(digit.saturating_sub(1)).ok())
+                .and_then(Screen::from_index),
+            '0' => Some(Screen::Tokens),
+            's' => Some(Screen::Settings),
+            'a' => Some(Screen::About),
+            _ => None,
+        }
     }
 
     /// The next screen, wrapping around.
@@ -2742,10 +2778,22 @@ fn settings_lines(app: &App, theme: &Theme) -> Vec<Line<'static>> {
         kv_line(theme, "Theme:        ", config.ui.theme.clone()),
         kv_line(
             theme,
+            "Nerd Fonts:   ",
+            if app.icons().enabled() {
+                "on".to_owned()
+            } else {
+                "off".to_owned()
+            },
+        ),
+        kv_line(
+            theme,
             "Poll every:   ",
             format!("{} ms", config.ui.poll_interval_ms),
         ),
-        hint_line(theme, "Press t to cycle the theme."),
+        hint_line(
+            theme,
+            "Edit: u API URL, b booth URL, k booth token, p poll interval, t theme.",
+        ),
         Line::raw(""),
         subheader(theme, "Booths"),
     ];
@@ -3030,6 +3078,16 @@ fn push_account_lines(lines: &mut Vec<Line<'static>>, theme: &Theme, phase: &Aut
                     Style::new().fg(theme.accent).add_modifier(Modifier::BOLD),
                 ),
             ]));
+            lines.push(Line::from(vec![
+                Span::styled("Expires:", Style::new().fg(theme.dim)),
+                Span::styled(
+                    format!(
+                        " {}",
+                        format_login_expiry(pending.expires_at, OffsetDateTime::now_utc())
+                    ),
+                    Style::new().fg(theme.warn),
+                ),
+            ]));
             if let Some(complete) = &pending.verification_uri_complete {
                 lines.push(Line::from(vec![
                     Span::styled("Direct: ", Style::new().fg(theme.dim)),
@@ -3120,6 +3178,15 @@ mod tests {
             assert!(!screen.short().is_empty());
             assert!(!screen.description().is_empty());
         }
+    }
+
+    #[test]
+    fn nav_keys_resolve_every_screen() {
+        for screen in Screen::all() {
+            assert_eq!(Screen::from_nav_key(screen.nav_key()), Some(*screen));
+        }
+        assert_eq!(Screen::from_nav_key('S'), Some(Screen::Settings));
+        assert_eq!(Screen::from_nav_key('x'), None);
     }
 
     #[test]

@@ -8,7 +8,7 @@
 
 use std::sync::Arc;
 
-use time::OffsetDateTime;
+use time::{Duration, OffsetDateTime};
 use tokio::sync::mpsc::error::TryRecvError;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use tokio::task::JoinHandle;
@@ -26,6 +26,8 @@ pub struct PendingLogin {
     pub verification_uri: String,
     /// URL embedding the code for one-tap verification, when provided.
     pub verification_uri_complete: Option<String>,
+    /// Absolute expiry of the device code.
+    pub expires_at: OffsetDateTime,
 }
 
 /// The user-visible authentication state.
@@ -152,6 +154,15 @@ impl<T: HttpTransport + 'static> AuthController<T> {
                     Err(TryRecvError::Empty) => return,
                     Err(TryRecvError::Disconnected) => {
                         self.rx = None;
+                        // The login task ended without reporting a terminal
+                        // outcome (it was aborted or panicked). Surface a
+                        // failure so the UI never sticks in a transient phase.
+                        if self.is_in_progress() {
+                            self.task = None;
+                            let message = "login task ended unexpectedly".to_owned();
+                            toasts.error(format!("Login failed: {message}"));
+                            self.phase = AuthPhase::Failed(message);
+                        }
                         return;
                     }
                 },
@@ -206,6 +217,7 @@ async fn run_login<T: HttpTransport>(
         user_code: authorization.user_code.clone(),
         verification_uri: authorization.verification_uri.clone(),
         verification_uri_complete: authorization.verification_uri_complete.clone(),
+        expires_at: OffsetDateTime::now_utc() + Duration::seconds(authorization.expires_in),
     }));
     match manager.client().poll_for_token(&authorization).await {
         Ok(tokens) => match manager.complete_login(&tokens, OffsetDateTime::now_utc()) {
@@ -330,6 +342,24 @@ mod tests {
 
         assert!(matches!(controller.phase(), AuthPhase::Failed(_)));
         assert!(controller.manager.current_session().unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn drain_surfaces_failure_when_task_ends_without_outcome() {
+        // A login task that ends without reporting an outcome (aborted or
+        // panicked) disconnects the channel; the UI must fall to `Failed`
+        // rather than sticking in the transient `Starting` phase forever.
+        let mut controller = controller_with(vec![]);
+        let mut toasts = Toasts::default();
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<AuthOutcome>();
+        controller.phase = AuthPhase::Starting;
+        controller.rx = Some(rx);
+        drop(tx);
+
+        controller.drain(&mut toasts);
+
+        assert!(matches!(controller.phase(), AuthPhase::Failed(_)));
+        assert!(controller.rx.is_none());
     }
 
     #[tokio::test]

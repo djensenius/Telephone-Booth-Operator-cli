@@ -19,6 +19,7 @@ use crate::data::{
 use crate::event::{AppEvent, EventLoop};
 use crate::tui::Tui;
 use crate::ui;
+use crate::ui::icons::Icons;
 use crate::ui::modal::{Intent, Modal, ModalDecision};
 use crate::ui::screens::Screen;
 use crate::ui::theme::Theme;
@@ -32,6 +33,7 @@ pub struct App {
     config: Config,
     config_path: PathBuf,
     theme: Theme,
+    icons: Icons,
     screen: Screen,
     toasts: Toasts,
     auth: AuthController,
@@ -47,6 +49,7 @@ pub struct App {
     tokens: TokensController,
     playback: PlaybackController,
     modal: Option<Modal>,
+    show_help: bool,
     should_quit: bool,
 }
 
@@ -59,6 +62,7 @@ impl App {
     /// initialized.
     pub fn new(config: Config, config_path: PathBuf) -> Result<Self> {
         let theme = Theme::from_name(&config.ui.theme);
+        let icons = Icons::new(config.ui.nerd_fonts);
         let mut toasts = Toasts::default();
         toasts.info("Welcome to tb-operator. Press q to quit.");
         if config.booths.is_empty() {
@@ -93,6 +97,7 @@ impl App {
             config,
             config_path,
             theme,
+            icons,
             screen: Screen::Status,
             toasts,
             auth,
@@ -108,6 +113,7 @@ impl App {
             tokens: TokensController::new(api),
             playback,
             modal: None,
+            show_help: false,
             should_quit: false,
         })
     }
@@ -185,6 +191,18 @@ impl App {
     #[must_use]
     pub fn theme(&self) -> &Theme {
         &self.theme
+    }
+
+    /// The resolved Nerd Font glyph set for chrome rendering.
+    #[must_use]
+    pub fn icons(&self) -> Icons {
+        self.icons
+    }
+
+    /// Whether the `?` help overlay is currently shown.
+    #[must_use]
+    pub fn show_help(&self) -> bool {
+        self.show_help
     }
 
     /// The currently focused screen.
@@ -328,8 +346,15 @@ impl App {
             self.handle_modal_key(key);
             return;
         }
+        // The help overlay likewise captures input (and offers login/logout).
+        if self.show_help {
+            self.handle_help_key(key);
+            return;
+        }
         match key.code {
             KeyCode::Char('q') => self.should_quit = true,
+            KeyCode::Char('?') => self.show_help = true,
+            KeyCode::Char('g' | 'G') if self.screen != Screen::Messages => self.show_help = true,
             KeyCode::Esc => {
                 if self.screen == Screen::Tokens && self.tokens.dismiss_revealed() {
                     self.toasts.info("Secret dismissed.");
@@ -342,6 +367,18 @@ impl App {
             }
             KeyCode::Tab | KeyCode::Right => self.screen = self.screen.next(),
             KeyCode::BackTab | KeyCode::Left => self.screen = self.screen.prev(),
+            KeyCode::Char('u' | 'U') if self.screen == Screen::Settings => {
+                self.open_operator_url_prompt();
+            }
+            KeyCode::Char('b' | 'B') if self.screen == Screen::Settings => {
+                self.open_booth_url_prompt();
+            }
+            KeyCode::Char('k' | 'K') if self.screen == Screen::Settings => {
+                self.open_booth_token_prompt();
+            }
+            KeyCode::Char('p' | 'P') if self.screen == Screen::Settings => {
+                self.open_poll_interval_prompt();
+            }
             KeyCode::Down | KeyCode::Char('j') => self.select_next_active(),
             KeyCode::Up | KeyCode::Char('k') => self.select_prev_active(),
             KeyCode::Char('r' | 'R') => self.refresh_active(),
@@ -430,12 +467,12 @@ impl App {
             KeyCode::Char('d' | 'D') if self.screen == Screen::Debug => {
                 self.open_dial_prompt();
             }
-            KeyCode::Char('l' | 'L') if self.screen == Screen::Settings => self.begin_login(),
+            KeyCode::Char('l' | 'L') => self.begin_login(),
             KeyCode::Char('o' | 'O') if self.screen == Screen::Settings => {
                 self.auth.sign_out(&mut self.toasts);
             }
             KeyCode::Char('t' | 'T') if self.screen == Screen::Settings => self.cycle_theme(),
-            KeyCode::Char(c) if c.is_ascii_digit() && c != '0' => self.jump_to_digit(c),
+            KeyCode::Char(c) if c.is_ascii_digit() => self.jump_to_nav_key(c),
             _ => {}
         }
     }
@@ -487,6 +524,22 @@ impl App {
             Intent::SimulateDial => {
                 let input = modal.input().to_owned();
                 self.simulate_dial(&input);
+            }
+            Intent::EditOperatorBaseUrl => {
+                let input = modal.input().to_owned();
+                self.update_operator_base_url(&input);
+            }
+            Intent::EditBoothDebugUrl => {
+                let input = modal.input().to_owned();
+                self.update_first_booth_url(&input);
+            }
+            Intent::EditBoothDebugToken => {
+                let input = modal.input().to_owned();
+                self.update_first_booth_token(&input);
+            }
+            Intent::EditPollInterval => {
+                let input = modal.input().to_owned();
+                self.update_poll_interval(&input);
             }
         }
     }
@@ -732,12 +785,158 @@ impl App {
         let next = Theme::next_name(&self.config.ui.theme);
         self.config.ui.theme = next.to_owned();
         self.theme = Theme::from_name(next);
-        match self.config.save_to(&self.config_path) {
+        match self.persist_config_and_secrets() {
             Ok(()) => self.toasts.info(format!("Theme: {next}")),
             Err(err) => self.toasts.warn(format!(
                 "Theme set to {next}, but saving config failed: {err}"
             )),
         }
+    }
+
+    /// Open a prompt to edit the operator API URL.
+    fn open_operator_url_prompt(&mut self) {
+        self.modal = Some(Modal::prompt_with_input(
+            "Edit operator API",
+            "Base URL",
+            Intent::EditOperatorBaseUrl,
+            self.config.operator.base_url.clone(),
+        ));
+    }
+
+    /// Open a prompt to edit the first configured booth's debug URL.
+    fn open_booth_url_prompt(&mut self) {
+        let Some(booth) = self.config.booths.first() else {
+            self.toasts.info("No booth is configured.");
+            return;
+        };
+        self.modal = Some(Modal::prompt_with_input(
+            "Edit booth debug URL",
+            format!(
+                "Debug URL for {}",
+                booth.name.as_deref().unwrap_or(&booth.id)
+            ),
+            Intent::EditBoothDebugUrl,
+            booth.debug_base_url.clone(),
+        ));
+    }
+
+    /// Open a prompt to replace the first configured booth's debug token.
+    fn open_booth_token_prompt(&mut self) {
+        let Some(booth) = self.config.booths.first() else {
+            self.toasts.info("No booth is configured.");
+            return;
+        };
+        self.modal = Some(Modal::prompt(
+            "Edit booth debug token",
+            format!(
+                "Paste new token for {}",
+                booth.name.as_deref().unwrap_or(&booth.id)
+            ),
+            Intent::EditBoothDebugToken,
+        ));
+    }
+
+    /// Open a prompt to edit the displayed poll interval preference.
+    fn open_poll_interval_prompt(&mut self) {
+        self.modal = Some(Modal::prompt_with_input(
+            "Edit poll interval",
+            "Milliseconds",
+            Intent::EditPollInterval,
+            self.config.ui.poll_interval_ms.to_string(),
+        ));
+    }
+
+    /// Persist a changed operator API base URL.
+    fn update_operator_base_url(&mut self, input: &str) {
+        let value = input.trim();
+        if !is_http_url(value) {
+            self.toasts.warn("Enter an http:// or https:// URL.");
+            return;
+        }
+        self.config.operator.base_url = value.to_owned();
+        match self.persist_config_and_secrets() {
+            Ok(()) => self
+                .toasts
+                .info("Operator API URL saved. Restart to rebuild API clients."),
+            Err(err) => self.toasts.error(format!("Saving config failed: {err}")),
+        }
+    }
+
+    /// Persist and apply the first configured booth's debug URL.
+    fn update_first_booth_url(&mut self, input: &str) {
+        let value = input.trim();
+        if !is_http_url(value) {
+            self.toasts.warn("Enter an http:// or https:// URL.");
+            return;
+        }
+        let Some(booth) = self.config.booths.first_mut() else {
+            self.toasts.info("No booth is configured.");
+            return;
+        };
+        booth.debug_base_url = value.to_owned();
+        match self.persist_config_and_secrets() {
+            Ok(()) => {
+                self.rebuild_booth_controllers();
+                self.toasts.info("Booth debug URL saved.");
+            }
+            Err(err) => self.toasts.error(format!("Saving config failed: {err}")),
+        }
+    }
+
+    /// Persist and apply the first configured booth's debug token.
+    fn update_first_booth_token(&mut self, input: &str) {
+        let value = input.trim();
+        if value.is_empty() {
+            self.toasts.warn("Paste a non-empty debug token.");
+            return;
+        }
+        let Some(booth) = self.config.booths.first_mut() else {
+            self.toasts.info("No booth is configured.");
+            return;
+        };
+        booth.debug_token = Some(value.to_owned());
+        match self.persist_config_and_secrets() {
+            Ok(()) => {
+                self.rebuild_booth_controllers();
+                self.toasts.info("Booth debug token saved.");
+            }
+            Err(err) => self.toasts.error(format!("Saving config failed: {err}")),
+        }
+    }
+
+    /// Persist the UI poll interval preference.
+    fn update_poll_interval(&mut self, input: &str) {
+        let Ok(value) = input.trim().parse::<u64>() else {
+            self.toasts.warn("Enter a whole number of milliseconds.");
+            return;
+        };
+        if value < 250 {
+            self.toasts.warn("Poll interval must be at least 250 ms.");
+            return;
+        }
+        self.config.ui.poll_interval_ms = value;
+        match self.persist_config_and_secrets() {
+            Ok(()) => self
+                .toasts
+                .info(format!("Poll interval saved: {value} ms.")),
+            Err(err) => self.toasts.error(format!("Saving config failed: {err}")),
+        }
+    }
+
+    /// Save config and secrets without leaking debug tokens into config.toml.
+    fn persist_config_and_secrets(&self) -> std::result::Result<(), String> {
+        let mut shareable = self.config.clone();
+        let secrets = shareable.take_secrets();
+        shareable
+            .save_to(&self.config_path)
+            .map_err(|err| err.to_string())?;
+        secrets.save().map_err(|err| err.to_string())
+    }
+
+    /// Rebuild booth-direct controllers after Settings changes.
+    fn rebuild_booth_controllers(&mut self) {
+        self.system_health = Self::build_system_health(&self.config, &mut self.toasts);
+        self.debug = Self::build_debug(&self.config, &mut self.toasts);
     }
 
     /// Run a booth simulate action, gating on booth availability, the booth's
@@ -880,14 +1079,37 @@ impl App {
         }
     }
 
-    /// Jump to the screen addressed by a `1`-`9` digit key, if it exists.
-    fn jump_to_digit(&mut self, c: char) {
-        let Some(digit) = c.to_digit(10) else { return };
-        let Ok(index) = usize::try_from(digit.saturating_sub(1)) else {
-            return;
-        };
-        if let Some(screen) = Screen::from_index(index) {
+    /// Route a key to the `?` help overlay: close it, or run login/logout. The
+    /// overlay stays open during login so the device code stays visible.
+    fn handle_help_key(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Esc | KeyCode::Char('?' | 'q') => self.show_help = false,
+            KeyCode::Tab | KeyCode::Right => self.screen = self.screen.next(),
+            KeyCode::BackTab | KeyCode::Left => self.screen = self.screen.prev(),
+            KeyCode::Char(c) if Self::is_screen_palette_key(c) => {
+                self.jump_to_nav_key(c);
+                self.show_help = false;
+            }
+            KeyCode::Char('l' | 'L') => self.begin_login(),
+            KeyCode::Char('o' | 'O') => self.auth.sign_out(&mut self.toasts),
+            _ => {}
+        }
+    }
+
+    /// Whether `key` is used by the screen palette.
+    fn is_screen_palette_key(key: char) -> bool {
+        Screen::from_nav_key(key).is_some()
+    }
+
+    /// Jump to the screen addressed by a palette key, if it exists.
+    fn jump_to_nav_key(&mut self, key: char) {
+        if let Some(screen) = Screen::from_nav_key(key) {
             self.screen = screen;
         }
     }
+}
+
+/// Minimal URL guard for editable config fields.
+fn is_http_url(value: &str) -> bool {
+    value.starts_with("http://") || value.starts_with("https://")
 }

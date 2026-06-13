@@ -30,6 +30,14 @@ pub enum Intent {
     RevokeApiToken,
     /// Collect a rotary digit (0-9) and simulate dialing it on the booth.
     SimulateDial,
+    /// Edit the operator API base URL.
+    EditOperatorBaseUrl,
+    /// Edit the first configured booth's debug server URL.
+    EditBoothDebugUrl,
+    /// Edit the first configured booth's debug bearer token.
+    EditBoothDebugToken,
+    /// Edit the UI poll interval in milliseconds.
+    EditPollInterval,
 }
 
 /// What the app should do after routing a key to the active modal.
@@ -89,11 +97,22 @@ impl Modal {
     /// Build an empty single-line prompt modal.
     #[must_use]
     pub fn prompt(title: impl Into<String>, label: impl Into<String>, intent: Intent) -> Self {
+        Self::prompt_with_input(title, label, intent, String::new())
+    }
+
+    /// Build a single-line prompt seeded with an existing value.
+    #[must_use]
+    pub fn prompt_with_input(
+        title: impl Into<String>,
+        label: impl Into<String>,
+        intent: Intent,
+        input: impl Into<String>,
+    ) -> Self {
         Self::Prompt(PromptModal {
             title: title.into(),
             label: label.into(),
             intent,
-            input: String::new(),
+            input: input.into(),
         })
     }
 

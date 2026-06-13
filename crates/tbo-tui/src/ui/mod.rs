@@ -1,5 +1,6 @@
 //! Top-level rendering: tab bar, body, status bar, and toast overlay.
 
+pub mod icons;
 pub mod modal;
 pub mod screens;
 pub mod theme;
@@ -9,9 +10,12 @@ use ratatui::Frame;
 use ratatui::layout::{Constraint, Flex, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Clear, Paragraph, Tabs, Wrap};
+use ratatui::widgets::{Block, Clear, Paragraph, Wrap};
+use time::OffsetDateTime;
 
 use crate::app::App;
+use crate::auth::AuthPhase;
+use crate::ui::icons::Icons;
 use crate::ui::modal::Modal;
 use crate::ui::screens::Screen;
 use crate::ui::theme::Theme;
@@ -25,40 +29,60 @@ pub fn render(app: &App, frame: &mut Frame) {
         Constraint::Length(1),
     ])
     .split(frame.area());
-    let (tabs_area, body_area, status_area) = (areas[0], areas[1], areas[2]);
+    let (header_area, body_area, status_area) = (areas[0], areas[1], areas[2]);
 
-    render_tabs(app, frame, tabs_area);
+    render_header(app, frame, header_area);
     screens::render(app, frame, body_area);
     render_status_bar(app, frame, status_area);
-    render_toasts(app.toasts(), app.theme(), frame, body_area);
+    render_toasts(app.toasts(), app.theme(), app.icons(), frame, body_area);
     if let Some(modal) = app.modal() {
         render_modal(modal, app.theme(), frame, body_area);
     }
+    if app.show_help() {
+        render_help(app, frame, body_area);
+    }
 }
 
-/// Render the top tab bar.
-fn render_tabs(app: &App, frame: &mut Frame, area: Rect) {
+/// Render compact location chrome for the active screen.
+fn render_header(app: &App, frame: &mut Frame, area: Rect) {
     let theme = app.theme();
-    let titles = Screen::all()
-        .iter()
-        .enumerate()
-        .map(|(index, screen)| format!("{} {}", index + 1, screen.short()));
-    let tabs = Tabs::new(titles)
-        .select(app.screen().index())
-        .style(Style::new().fg(theme.dim))
-        .highlight_style(Style::new().fg(theme.accent).add_modifier(Modifier::BOLD))
-        .block(
-            Block::bordered()
-                .border_style(Style::new().fg(theme.dim))
-                .title(" tb-operator "),
-        );
-    frame.render_widget(tabs, area);
+    let icons = app.icons();
+    let screen = app.screen();
+    let line = Line::from(vec![
+        Span::styled(
+            format!("{} {} ", screen.prev().nav_key(), screen.prev().short()),
+            Style::new().fg(theme.dim),
+        ),
+        Span::styled("‹ ", Style::new().fg(theme.dim)),
+        Span::styled(
+            format!(
+                "{} {}{}",
+                screen.nav_key(),
+                icons.tab(screen),
+                screen.title()
+            ),
+            Style::new().fg(theme.accent).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(" ", Style::new().fg(theme.dim)),
+        Span::styled("› ", Style::new().fg(theme.dim)),
+        Span::styled(
+            format!("{} {}", screen.next().nav_key(), screen.next().short()),
+            Style::new().fg(theme.dim),
+        ),
+        Span::styled("  ? screens", Style::new().fg(theme.dim)),
+    ]);
+    let header = Paragraph::new(line).block(
+        Block::bordered()
+            .border_style(Style::new().fg(theme.dim))
+            .title(format!(" {}tb-operator ", icons.brand())),
+    );
+    frame.render_widget(header, area);
 }
 
 /// Render the bottom status/help bar.
 fn render_status_bar(app: &App, frame: &mut Frame, area: Rect) {
     let theme = app.theme();
-    let ready = Span::styled("● ", Style::new().fg(theme.ok));
+    let ready = Span::styled(app.icons().ready(), Style::new().fg(theme.ok));
     let pill = Span::styled(
         format!(" {} ", app.screen().title()),
         Style::new()
@@ -73,6 +97,10 @@ fn render_status_bar(app: &App, frame: &mut Frame, area: Rect) {
 
 /// Context-sensitive help text for the status bar.
 fn status_hints(app: &App) -> &'static str {
+    // The help overlay captures all input; show how to leave it.
+    if app.show_help() {
+        return "  choose screen | L log in | O sign out | Esc/? close";
+    }
     // A modal captures all input; show its controls regardless of screen.
     if let Some(modal) = app.modal() {
         return match modal {
@@ -83,47 +111,49 @@ fn status_hints(app: &App) -> &'static str {
     // A login can be cancelled from any screen, so surface the hint whenever
     // one is in progress regardless of the focused screen.
     if app.auth().is_in_progress() {
-        return "  Esc cancel login | Tab/Right next | 1-9 jump | q quit";
+        return "  Esc cancel login | Tab/Right next | ? screens | q quit";
     }
     match app.screen() {
         Screen::Settings => {
-            "  L log in | O sign out | t theme | Tab/Right next | 1-9 jump | q quit"
+            "  u API URL | b booth URL | k booth token | p poll ms | t theme | L/O auth | ? screens"
         }
-        Screen::About => "  Tab/Right next | Shift-Tab/Left prev | 1-9 jump | q quit",
-        Screen::Status => "  r refresh | Tab/Right next | Shift-Tab/Left prev | 1-9 jump | q quit",
+        Screen::About => "  ? screens | Tab/Right next | Shift-Tab/Left prev | q quit",
+        Screen::Status => "  r refresh | ? screens | Tab/Right next | Shift-Tab/Left prev | q quit",
         Screen::Messages => {
-            "  ↑/↓ select | a approve | x reject | t transcribe | m moderate | g translate | d delete | p play | space pause | s stop | r reload | q quit"
+            "  ↑/↓ select | a approve | x reject | t transcribe | m moderate | g translate | d delete | p play | space pause | s stop | r reload | ? screens"
         }
         Screen::Questions => {
-            "  ↑/↓ select | a activate | e deactivate | d archive | n new | p play | space pause | s stop | r reload | q quit"
+            "  ↑/↓ select | a activate | e deactivate | d archive | n new | p play | space pause | s stop | r reload | ? screens"
         }
-        Screen::Sessions => "  ↑/↓ select | r reload | Tab/Right next | 1-9 jump | q quit",
-        Screen::Events => "  ↑/↓ select | r reload | f follow | Tab/Right next | q quit",
-        Screen::Stats => "  r reload | w window | Tab/Right next | 1-9 jump | q quit",
+        Screen::Sessions => "  ↑/↓ select | r reload | ? screens | Tab/Right next | q quit",
+        Screen::Events => {
+            "  ↑/↓ select | r reload | f follow | ? screens | Tab/Right next | q quit"
+        }
+        Screen::Stats => "  r reload | w window | ? screens | Tab/Right next | q quit",
         Screen::LiveSystem => {
-            "  r refresh | Tab/Right next | Shift-Tab/Left prev | 1-9 jump | q quit"
+            "  r refresh | ? screens | Tab/Right next | Shift-Tab/Left prev | q quit"
         }
         Screen::SystemHealth => {
-            "  r refresh | Tab/Right next | Shift-Tab/Left prev | 1-9 jump | q quit"
+            "  r refresh | ? screens | Tab/Right next | Shift-Tab/Left prev | q quit"
         }
         Screen::Debug => {
             if app
                 .debug()
                 .is_some_and(crate::data::DebugController::controls_allowed)
             {
-                "  r refresh | f live | v level | o hook-off | h hook-on | p playback | d dial | q quit"
+                "  r refresh | f live | v level | o hook-off | h hook-on | p playback | d dial | ? screens"
             } else {
-                "  r refresh | f live | v level | Tab/Right next | q quit"
+                "  r refresh | f live | v level | ? screens | Tab/Right next | q quit"
             }
         }
         Screen::Tokens => {
-            "  ↑/↓ select | n new | d revoke | u usage | r reload | Esc dismiss secret | q quit"
+            "  ↑/↓ select | n new | d revoke | u usage | r reload | Esc dismiss secret | ? screens"
         }
     }
 }
 
 /// Render the toast overlay anchored to the bottom-right of `area`.
-fn render_toasts(toasts: &Toasts, theme: &Theme, frame: &mut Frame, area: Rect) {
+fn render_toasts(toasts: &Toasts, theme: &Theme, icons: Icons, frame: &mut Frame, area: Rect) {
     if toasts.is_empty() {
         return;
     }
@@ -131,12 +161,15 @@ fn render_toasts(toasts: &Toasts, theme: &Theme, frame: &mut Frame, area: Rect) 
     let visible: Vec<Line> = toasts
         .iter()
         .map(|toast| {
-            let color = match toast.level {
-                Level::Info => theme.fg,
-                Level::Warn => theme.warn,
-                Level::Error => theme.error,
+            let (color, glyph) = match toast.level {
+                Level::Info => (theme.fg, icons.info()),
+                Level::Warn => (theme.warn, icons.warn()),
+                Level::Error => (theme.error, icons.error()),
             };
-            Line::from(Span::styled(toast.text.clone(), Style::new().fg(color)))
+            Line::from(Span::styled(
+                format!("{glyph}{}", toast.text),
+                Style::new().fg(color),
+            ))
         })
         .collect();
 
@@ -218,6 +251,214 @@ fn render_modal(modal: &Modal, theme: &Theme, frame: &mut Frame, area: Rect) {
     );
 }
 
+/// Render the `?` screen palette plus a live account section with
+/// login/logout options.
+fn render_help(app: &App, frame: &mut Frame, area: Rect) {
+    let theme = app.theme();
+    let icons = app.icons();
+
+    let dim = Style::new().fg(theme.dim);
+    let mut lines: Vec<Line<'static>> = Vec::new();
+
+    lines.push(Line::from(Span::styled(
+        "Go to screen",
+        Style::new().fg(theme.accent).add_modifier(Modifier::BOLD),
+    )));
+    push_screen_group(
+        &mut lines,
+        theme,
+        icons,
+        "Operator",
+        &[
+            Screen::Status,
+            Screen::Messages,
+            Screen::Questions,
+            Screen::Events,
+            Screen::Sessions,
+            Screen::Stats,
+        ],
+        app.screen(),
+    );
+    push_screen_group(
+        &mut lines,
+        theme,
+        icons,
+        "System",
+        &[Screen::LiveSystem, Screen::SystemHealth, Screen::Debug],
+        app.screen(),
+    );
+    push_screen_group(
+        &mut lines,
+        theme,
+        icons,
+        "Admin",
+        &[Screen::Tokens, Screen::Settings, Screen::About],
+        app.screen(),
+    );
+    lines.push(Line::raw(""));
+    lines.push(Line::from(Span::styled(
+        "Account",
+        Style::new().fg(theme.accent).add_modifier(Modifier::BOLD),
+    )));
+    push_help_account(&mut lines, theme, icons, app.auth().phase());
+    lines.push(palette_action_line(
+        theme,
+        "L",
+        "Log in (Authentik device code)",
+    ));
+    lines.push(palette_action_line(theme, "O", "Sign out"));
+    lines.push(Line::raw(""));
+    lines.push(Line::from(Span::styled(
+        "Tab/Shift-Tab still cycle screens. Esc or ? closes this palette.",
+        dim.add_modifier(Modifier::ITALIC),
+    )));
+
+    let width = 72.min(area.width.saturating_sub(4)).max(28);
+    let height = u16::try_from(lines.len())
+        .unwrap_or(10)
+        .saturating_add(2)
+        .min(area.height);
+    let rect = center(area, width, height);
+
+    let block = Block::bordered()
+        .border_style(Style::new().fg(theme.accent))
+        .title(format!(" {}Screens ", icons.help()));
+    frame.render_widget(Clear, rect);
+    frame.render_widget(
+        Paragraph::new(lines)
+            .wrap(Wrap { trim: false })
+            .block(block),
+        rect,
+    );
+}
+
+/// Append one grouped section of screen shortcuts to the palette.
+fn push_screen_group(
+    lines: &mut Vec<Line<'static>>,
+    theme: &Theme,
+    icons: Icons,
+    title: &'static str,
+    screens: &[Screen],
+    current: Screen,
+) {
+    lines.push(Line::from(Span::styled(
+        format!("  {title}"),
+        Style::new().fg(theme.dim).add_modifier(Modifier::BOLD),
+    )));
+    for screen in screens {
+        let marker = if *screen == current { "›" } else { " " };
+        let style = if *screen == current {
+            Style::new().fg(theme.accent).add_modifier(Modifier::BOLD)
+        } else {
+            Style::new().fg(theme.fg)
+        };
+        lines.push(Line::from(vec![
+            Span::styled(format!("  {marker} "), Style::new().fg(theme.accent)),
+            Span::styled(
+                format!("{:<2}", screen.nav_key()),
+                Style::new().fg(theme.accent).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(format!("{}{}", icons.tab(*screen), screen.title()), style),
+        ]));
+    }
+}
+
+/// Format a non-screen action in the screen palette.
+fn palette_action_line(theme: &Theme, key: &str, desc: &str) -> Line<'static> {
+    Line::from(vec![
+        Span::styled("    ", Style::new().fg(theme.dim)),
+        Span::styled(
+            format!("{key:<2}"),
+            Style::new().fg(theme.accent).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(desc.to_owned(), Style::new().fg(theme.fg)),
+    ])
+}
+
+/// Append the current authentication status to the help overlay's account
+/// section, mirroring the Settings screen so the device code is visible here
+/// while a login is in progress.
+fn push_help_account(
+    lines: &mut Vec<Line<'static>>,
+    theme: &Theme,
+    icons: Icons,
+    phase: &AuthPhase,
+) {
+    match phase {
+        AuthPhase::SignedOut => lines.push(Line::from(vec![
+            Span::styled(
+                format!("  {}", icons.signed_out()),
+                Style::new().fg(theme.dim),
+            ),
+            Span::styled("Signed out", Style::new().fg(theme.dim)),
+        ])),
+        AuthPhase::Starting => lines.push(Line::from(vec![
+            Span::styled(
+                format!("  {}", icons.awaiting()),
+                Style::new().fg(theme.warn),
+            ),
+            Span::styled("Starting login…", Style::new().fg(theme.warn)),
+        ])),
+        AuthPhase::AwaitingApproval(pending) => {
+            lines.push(Line::from(vec![
+                Span::styled(
+                    format!("  {}", icons.awaiting()),
+                    Style::new().fg(theme.warn),
+                ),
+                Span::styled("Awaiting approval", Style::new().fg(theme.warn)),
+            ]));
+            lines.push(Line::from(vec![
+                Span::styled("  Visit: ", Style::new().fg(theme.dim)),
+                Span::raw(pending.verification_uri.clone()),
+            ]));
+            lines.push(Line::from(vec![
+                Span::styled("  Code:  ", Style::new().fg(theme.dim)),
+                Span::styled(
+                    pending.user_code.clone(),
+                    Style::new().fg(theme.accent).add_modifier(Modifier::BOLD),
+                ),
+            ]));
+            lines.push(Line::from(vec![
+                Span::styled("  Expires: ", Style::new().fg(theme.dim)),
+                Span::styled(
+                    format_login_expiry(pending.expires_at, OffsetDateTime::now_utc()),
+                    Style::new().fg(theme.warn),
+                ),
+            ]));
+        }
+        AuthPhase::SignedIn { .. } => lines.push(Line::from(vec![
+            Span::styled(
+                format!("  {}", icons.signed_in()),
+                Style::new().fg(theme.ok),
+            ),
+            Span::styled("Signed in", Style::new().fg(theme.ok)),
+        ])),
+        AuthPhase::Failed(message) => {
+            lines.push(Line::from(vec![
+                Span::styled(format!("  {}", icons.error()), Style::new().fg(theme.error)),
+                Span::styled("Login failed", Style::new().fg(theme.error)),
+            ]));
+            lines.push(Line::from(vec![
+                Span::styled("  Reason: ", Style::new().fg(theme.dim)),
+                Span::raw(message.clone()),
+            ]));
+        }
+    }
+}
+
+/// Format a device-code expiry relative to `now`.
+fn format_login_expiry(expires_at: OffsetDateTime, now: OffsetDateTime) -> String {
+    let remaining = expires_at - now;
+    let seconds = remaining.whole_seconds();
+    if seconds <= 0 {
+        return "expired".to_owned();
+    }
+    if seconds < 60 {
+        return format!("{seconds}s");
+    }
+    format!("{}m {:02}s", seconds / 60, seconds % 60)
+}
+
 /// Center a `width`×`height` rectangle within `area`.
 fn center(area: Rect, width: u16, height: u16) -> Rect {
     let horizontal = Layout::horizontal([Constraint::Length(width)])
@@ -227,4 +468,27 @@ fn center(area: Rect, width: u16, height: u16) -> Rect {
         .flex(Flex::Center)
         .split(horizontal[0]);
     vertical[0]
+}
+
+#[cfg(test)]
+mod tests {
+    use time::{Duration, OffsetDateTime};
+
+    use super::format_login_expiry;
+
+    #[test]
+    fn format_login_expiry_counts_down_and_expires() {
+        let now = OffsetDateTime::UNIX_EPOCH;
+
+        assert_eq!(format_login_expiry(now + Duration::seconds(59), now), "59s");
+        assert_eq!(
+            format_login_expiry(now + Duration::seconds(60), now),
+            "1m 00s"
+        );
+        assert_eq!(
+            format_login_expiry(now + Duration::seconds(125), now),
+            "2m 05s"
+        );
+        assert_eq!(format_login_expiry(now, now), "expired");
+    }
 }
