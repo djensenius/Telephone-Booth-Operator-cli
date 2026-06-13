@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.3](https://github.com/djensenius/Telephone-Booth-Operator-cli/compare/v0.2.2...v0.2.3) (2026-06-13)
+
+
+### Bug Fixes
+
+* improve operator settings and navigation ([a486b06](https://github.com/djensenius/Telephone-Booth-Operator-cli/commit/a486b06ec5cd16094c8fe1fdd389c78e7b4eca17))
+
 ## [0.2.2](https://github.com/djensenius/Telephone-Booth-Operator-cli/compare/v0.2.1...v0.2.2) (2026-06-12)
 
 
