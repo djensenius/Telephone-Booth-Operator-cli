@@ -32,8 +32,9 @@ issues and milestones for any remaining polish.
 - **In-terminal audio**: FLAC playback of recorded messages and questions.
 - **Authentik authentication** via the OAuth 2.0 **device authorization grant**,
   with refresh tokens stored in the OS keychain.
-- **Theming & settings**: switchable colour palettes, a Settings screen
-  (connection, configured booths, identity) and an About screen.
+- **Theming & settings**: Catppuccin and Bell-Canada colour palettes, optional
+  Nerd Font icons, a `?` help overlay, a Settings screen (connection, configured
+  booths, identity) and an About screen.
 
 ## Architecture
 
@@ -85,14 +86,18 @@ tb-operator --version       # print the version and exit
 
 On first launch (when no config file exists yet) `tb-operator` runs an
 interactive **setup flow** in the terminal — you can also re-run it any time
-with `tb-operator --setup`. It:
+with `tb-operator --setup`. Each prompt is preceded by a short explanation of
+what it configures. It:
 
 1. prompts for the operator API URL and, optionally, custom Authentik OIDC
    settings (the defaults target the production Telephone-Booth tenant);
-2. collects any booth debug-server connections;
-3. signs you in with the device-authorization grant (see
-   [Authentication](#authentication)); and
-4. validates the operator API connection with the new token.
+2. lets you pick a colour theme and toggle Nerd Font icons;
+3. collects any booth debug-server connections (explaining the debug token and
+   the pinned TLS certificate fingerprint);
+4. signs you in with the device-authorization grant (see
+   [Authentication](#authentication)), showing the code and verification URL,
+   opening your browser when possible, and offering to retry if it fails; and
+5. validates the operator API connection with the new token.
 
 The shareable configuration is written to the config directory, while sensitive
 booth debug tokens are written to a separate owner-only secrets file in the
@@ -103,19 +108,32 @@ automatically when the input is not an interactive terminal.
 
 | Key | Action |
 | --- | --- |
+| `?` | Toggle the help overlay (also offers log in / sign out) |
 | `Tab` / `→` | Next screen |
 | `Shift-Tab` / `←` | Previous screen |
-| `1`–`9` | Jump to a screen by tab number |
+| `1`–`9`, `0`, `s`, `a` | Jump via the screen palette shortcuts |
 | `j` / `k` / `↑` / `↓` | Move the selection within a list |
 | `r` / `R` | Refresh the active screen |
+| `L` | Log in (Authentik device code) |
+| `O` | Sign out (Settings screen or help overlay) |
 | `q` / `Esc` / `Ctrl-C` | Quit |
 
-The screens are **Status, Messages, Questions, Events, Sessions, Statistics,
-Live System, System Health, Debug, API Tokens, Settings,** and **About**. Each
-screen's available actions are shown in the footer hint bar — for example,
-Messages offers approve/reject, translate, re-transcribe/re-moderate, delete,
-and audio playback (`p` play, `space` pause, `s` stop); Settings offers `L` log
-in, `O` sign out, and `t` to cycle the colour theme.
+Press **`?`** at any time for a grouped screen palette and your current account
+status, with log in / sign out actions. The screens are
+**Status, Messages, Questions, Events, Sessions, Statistics, Live System, System
+Health, Debug, API Tokens, Settings,** and **About**. Each screen's available
+actions are shown in the footer hint bar — for example, Messages offers
+approve/reject, translate, re-transcribe/re-moderate, delete, and audio playback
+(`p` play, `space` pause, `s` stop). You can log in with `L` from anywhere; sign
+out with `O` from the Settings screen or the help overlay, and cycle the colour
+theme with `t` on Settings. Settings can also edit common config values in-app:
+`u` operator API URL, `b` booth debug URL, `k` booth debug token, and `p` poll
+interval.
+
+With Nerd Font icons enabled (the default), the header, status bar, toasts, and
+account status are decorated with glyphs; they require a
+[Nerd Font](https://www.nerdfonts.com/) in your terminal and can be turned off
+during setup or with the `nerd-fonts` config key.
 
 The Debian package also installs a `man tb-operator` page and shell completions
 for bash, zsh, and fish.
@@ -125,17 +143,19 @@ for bash, zsh, and fish.
 `tb-operator` signs in to the operator API with Authentik's OAuth 2.0 **device
 authorization grant**, so no password is ever typed into the terminal:
 
-1. Launch `tb-operator` and open the **Settings** screen.
-2. Press **`L`** to start signing in. The screen shows a short user code and a
-   verification URL.
-3. On any device, open that URL, enter the code, and approve the request.
+1. Launch `tb-operator` and press **`L`** (from any screen, or open the `?` help
+   overlay and press `L`). The Settings screen and the help overlay show a short
+   user code and a verification URL.
+2. `tb-operator` opens that URL in your browser when it can; otherwise open it
+   on any device.
+3. Enter the code and approve the request.
 4. Sign-in then completes automatically. The **refresh token is stored in your
    operating system's keychain** (never in the config file); the access token is
    refreshed transparently as it expires.
 
-Press **`O`** on the Settings screen to sign out and clear the cached token. The
-issuer, client id, and scopes can be overridden in the config file; the defaults
-target the production Telephone-Booth Authentik tenant.
+Press **`O`** on the Settings screen or in the help overlay to sign out and clear
+the cached token. The issuer, client id, and scopes can be overridden in the
+config file; the defaults target the production Telephone-Booth Authentik tenant.
 
 To configure your own Authentik tenant (or reuse the mobile app's provider for
 the console's device-code flow), see [`docs/authentik-setup.md`](./docs/authentik-setup.md).
@@ -159,14 +179,19 @@ client-id = "x0M0MleMvCSCx8MqIE2jVoYe57nAhGymIG8azTEY"
 scopes = "openid email profile offline_access"
 
 [ui]
-theme = "bell-canada"        # or "bell-canada-blue", "high-contrast"
+# Themes: catppuccin-mocha (default), catppuccin-macchiato, catppuccin-frappe,
+# catppuccin-latte, bell-canada, bell-canada-blue, high-contrast.
+theme = "catppuccin-mocha"
+nerd-fonts = true            # set false for plain-text labels (no Nerd Font glyphs)
 poll-interval-ms = 5000
 
-# Repeat the [[booths]] block for each booth's on-device debug server.
+# Repeat the [[booths]] block for each booth's on-device debug server. For
+# Tailscale, use the HTTPS URL printed by `telephone-booth tailscale-status`
+# or `scripts/setup-tailscale-serve.sh` on the booth, not `:8080` directly.
 [[booths]]
 id = "booth-1"
 name = "Lobby"               # optional display name
-debug-base-url = "http://localhost:8080"
+debug-base-url = "https://telephone-booth.example.ts.net/"
 debug-token = "…"            # optional static bearer for the debug server
 pinned-sha256 = "…"          # optional LAN TLS cert fingerprint (lower-case hex)
 ```

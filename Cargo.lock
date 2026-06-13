@@ -2241,14 +2241,14 @@ dependencies = [
 
 [[package]]
 name = "tbo-audio"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "rodio",
 ]
 
 [[package]]
 name = "tbo-auth"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "keyring",
  "reqwest",
@@ -2263,7 +2263,7 @@ dependencies = [
 
 [[package]]
 name = "tbo-booth-client"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "futures",
  "hex",
@@ -2282,7 +2282,7 @@ dependencies = [
 
 [[package]]
 name = "tbo-core"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "directories",
  "serde",
@@ -2294,11 +2294,11 @@ dependencies = [
 
 [[package]]
 name = "tbo-metrics"
-version = "0.2.1"
+version = "0.2.2"
 
 [[package]]
 name = "tbo-operator-client"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "futures",
  "hex",
@@ -2315,7 +2315,7 @@ dependencies = [
 
 [[package]]
 name = "tbo-tui"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "anyhow",
  "clap",

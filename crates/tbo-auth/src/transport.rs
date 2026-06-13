@@ -6,8 +6,20 @@
 //! [`ReqwestTransport`]; tests provide an in-memory fake.
 
 use std::future::Future;
+use std::time::Duration;
 
 use crate::error::{AuthError, Result};
+
+/// Maximum time to establish a TCP/TLS connection before failing. Keeps a login
+/// from hanging indefinitely on an unreachable address (e.g. a stalled IPv6
+/// route, a proxy, or a silently dropped connection).
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Maximum total time for a single request/response. Every auth call (device
+/// authorization, token exchange, refresh) is a short request, so a request
+/// that exceeds this has stalled and should surface as an error rather than
+/// leaving the UI waiting forever.
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
 
 /// A minimal HTTP response: the status code and the body decoded as UTF-8.
 #[derive(Debug, Clone)]
@@ -56,6 +68,8 @@ impl ReqwestTransport {
     pub fn new() -> Result<Self> {
         let client = reqwest::Client::builder()
             .user_agent(concat!("tb-operator/", env!("CARGO_PKG_VERSION")))
+            .connect_timeout(CONNECT_TIMEOUT)
+            .timeout(REQUEST_TIMEOUT)
             .build()
             .map_err(|err| AuthError::Transport(err.to_string()))?;
         Ok(Self { client })
@@ -76,12 +90,30 @@ impl HttpTransport for ReqwestTransport {
             .form(form)
             .send()
             .await
-            .map_err(|err| AuthError::Transport(err.to_string()))?;
+            .map_err(|err| AuthError::Transport(describe(&err)))?;
         let status = response.status().as_u16();
         let body = response
             .text()
             .await
-            .map_err(|err| AuthError::Transport(err.to_string()))?;
+            .map_err(|err| AuthError::Transport(describe(&err)))?;
         Ok(HttpResponse { status, body })
     }
+}
+
+/// Format an error together with its full [`source`](std::error::Error::source)
+/// chain, so a transport failure surfaces its underlying cause (e.g. a connect
+/// timeout, DNS failure, or TLS error) instead of reqwest's opaque
+/// "error sending request for url (...)".
+fn describe<E: std::error::Error>(err: &E) -> String {
+    let mut message = err.to_string();
+    let mut source = err.source();
+    while let Some(cause) = source {
+        let text = cause.to_string();
+        if !message.contains(&text) {
+            message.push_str(": ");
+            message.push_str(&text);
+        }
+        source = cause.source();
+    }
+    message
 }

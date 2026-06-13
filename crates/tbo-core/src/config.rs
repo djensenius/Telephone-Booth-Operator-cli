@@ -77,8 +77,8 @@ pub struct BoothConfig {
     /// Human-friendly display name.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
-    /// Debug server base URL (Tailscale loopback `http://…:8080` or LAN TLS
-    /// `https://…:8443`).
+    /// Debug server base URL (Tailscale Serve `https://<booth>.<tailnet>.ts.net/`
+    /// or LAN TLS `https://…:8443`; use `http://127.0.0.1:8080` only on-booth).
     pub debug_base_url: String,
     /// Static bearer token for the debug server.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -93,17 +93,27 @@ pub struct BoothConfig {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub struct UiConfig {
-    /// Theme name (e.g. `bell-canada`).
+    /// Theme name (e.g. `catppuccin-mocha`).
     pub theme: String,
     /// Status/data poll interval in milliseconds.
     pub poll_interval_ms: u64,
+    /// Whether to render Nerd Font glyphs (tab/status icons). Requires a Nerd
+    /// Font installed in the terminal; disable for plain ASCII labels.
+    #[serde(default = "default_nerd_fonts")]
+    pub nerd_fonts: bool,
+}
+
+/// Default for [`UiConfig::nerd_fonts`]: enabled (assumes a Nerd Font terminal).
+const fn default_nerd_fonts() -> bool {
+    true
 }
 
 impl Default for UiConfig {
     fn default() -> Self {
         Self {
-            theme: "bell-canada".to_owned(),
+            theme: "catppuccin-mocha".to_owned(),
             poll_interval_ms: 5_000,
+            nerd_fonts: default_nerd_fonts(),
         }
     }
 }

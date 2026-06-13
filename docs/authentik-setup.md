@@ -95,6 +95,7 @@ Confirm the provider (Applications → Providers) has:
 | Client type                 | **Public**                                       |
 | Scopes                      | `openid email profile offline_access`            |
 | `groups` claim              | emitted (Authentik's default `profile` mapping)  |
+| Device/code validity        | long enough to sign in comfortably (e.g. 5 min)  |
 | Refresh token validity      | long enough for your session (e.g. 30 days)      |
 
 …and that the **application** has the `telephone-booth-operators` group bound
@@ -139,6 +140,7 @@ the mobile app. The brand device-code flow above is still required.
 | Subject mode                | Based on the User's hashed ID                        |
 | Include claims in id_token  | Yes                                                  |
 | Scopes                      | `openid` `email` `profile` `offline_access`          |
+| Device/code validity        | e.g. `minutes=5`                                     |
 | Refresh token validity      | e.g. `days=30`                                       |
 
 Make sure the provider emits a `groups` claim (the default `profile` scope

@@ -2,13 +2,17 @@
 //!
 //! Run before the `ratatui` interface takes over the terminal (on first launch
 //! when no config file exists, or on demand with `--setup`), this module walks
-//! the operator through configuring the console:
+//! the operator through configuring the console, explaining each prompt as it
+//! goes:
 //!
 //! 1. collect the operator API URL and, optionally, custom Authentik OIDC
 //!    settings (defaulting to the production Telephone-Booth tenant);
-//! 2. collect any booth debug-server connections;
-//! 3. sign in with the OAuth 2.0 device-authorization grant (setting up OIDC);
-//! 4. validate the operator API connection with the freshly issued token.
+//! 2. choose the colour theme and whether to render Nerd Font icons;
+//! 3. collect any booth debug-server connections;
+//! 4. sign in interactively with the OAuth 2.0 device-authorization grant —
+//!    showing the verification URL and code, opening the browser when possible,
+//!    and offering to retry until it succeeds or is skipped;
+//! 5. validate the operator API connection with the freshly issued token.
 //!
 //! The shareable [`Config`] is written to the platform *config* directory while
 //! sensitive booth debug tokens are written to a separate owner-only
@@ -17,6 +21,7 @@
 
 use std::io::{self, BufRead, Write};
 use std::path::Path;
+use std::process::{Command, Stdio};
 use std::sync::Arc;
 
 use anyhow::Result;
@@ -28,6 +33,7 @@ use tbo_core::config::{AuthConfig, BoothConfig, Config, OperatorConfig, UiConfig
 use tbo_operator_client::OperatorClient;
 
 use crate::data::{SessionTokenProvider, SharedSession};
+use crate::ui::theme;
 
 /// The answers collected for a single booth debug-server connection.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -53,6 +59,8 @@ pub struct OnboardingAnswers {
     pub auth: AuthConfig,
     /// UI theme name.
     pub theme: String,
+    /// Whether to render Nerd Font glyphs in the interface.
+    pub nerd_fonts: bool,
     /// Poll interval in milliseconds.
     pub poll_interval_ms: u64,
     /// Configured booths.
@@ -83,6 +91,7 @@ pub fn assemble(answers: OnboardingAnswers) -> (Config, Secrets) {
         ui: UiConfig {
             theme: answers.theme,
             poll_interval_ms: answers.poll_interval_ms,
+            nerd_fonts: answers.nerd_fonts,
         },
     };
     let secrets = config.take_secrets();
@@ -124,13 +133,8 @@ pub async fn run(config_path: &Path) -> Result<()> {
     }
 
     let session = build_session(&config.auth, &mut output)?;
-    if should_sign_in(&session, &mut output)?
-        && let Err(err) = sign_in(&session, &mut output).await
-    {
-        writeln!(
-            output,
-            "Sign-in did not complete ({err}); you can log in later from Settings."
-        )?;
+    if should_sign_in(&session, &mut output)? {
+        sign_in_with_retry(&session, &mut output).await?;
     }
     validate(&config, Arc::clone(&session), &mut output).await?;
 
@@ -139,12 +143,21 @@ pub async fn run(config_path: &Path) -> Result<()> {
 }
 
 /// Gather all onboarding answers interactively, seeding defaults from any
-/// existing configuration so a re-run preserves prior choices.
+/// existing configuration so a re-run preserves prior choices. Each section is
+/// preceded by a short explanation of what the prompts mean.
 fn collect_answers(
     input: &mut impl BufRead,
     output: &mut impl Write,
     existing: &Config,
 ) -> Result<OnboardingAnswers> {
+    section(output, "Operator API")?;
+    explain(
+        output,
+        &[
+            "The backend that serves messages, questions, sessions, and stats.",
+            "Use the default unless you run your own Telephone-Booth operator API.",
+        ],
+    )?;
     let operator_base_url = prompt_line(
         input,
         output,
@@ -152,6 +165,15 @@ fn collect_answers(
         &existing.operator.base_url,
     )?;
 
+    section(output, "Authentication (Authentik / OIDC)")?;
+    explain(
+        output,
+        &[
+            "Sign-in uses Authentik's OAuth device-code flow (like a smart TV):",
+            "no password is typed here — you approve a code in a browser.",
+            "The defaults target the production Telephone-Booth tenant.",
+        ],
+    )?;
     let auth = if prompt_yes_no(
         input,
         output,
@@ -160,6 +182,14 @@ fn collect_answers(
     )? {
         AuthConfig::default()
     } else {
+        explain(
+            output,
+            &[
+                "issuer:    your Authentik application URL, .../application/o/<slug>.",
+                "client id: the public client id of that application (no secret).",
+                "scopes:    space-separated OAuth scopes (keep offline_access for refresh).",
+            ],
+        )?;
         AuthConfig {
             issuer: prompt_line(input, output, "OIDC issuer URL", &existing.auth.issuer)?,
             client_id: prompt_line(input, output, "OIDC client id", &existing.auth.client_id)?,
@@ -167,12 +197,30 @@ fn collect_answers(
         }
     };
 
+    section(output, "Interface")?;
+    let theme = prompt_theme(input, output, &existing.ui.theme)?;
+    explain(
+        output,
+        &[
+            "Nerd Font icons add glyphs to the tabs and status bar.",
+            "They need a Nerd Font (https://nerdfonts.com) installed in your",
+            "terminal; choose no to keep plain text labels.",
+        ],
+    )?;
+    let nerd_fonts = prompt_yes_no(
+        input,
+        output,
+        "Enable Nerd Font icons?",
+        existing.ui.nerd_fonts,
+    )?;
+
     let booths = collect_booths(input, output, existing)?;
 
     Ok(OnboardingAnswers {
         operator_base_url,
         auth,
-        theme: existing.ui.theme.clone(),
+        theme,
+        nerd_fonts,
         poll_interval_ms: existing.ui.poll_interval_ms,
         booths,
     })
@@ -185,6 +233,15 @@ fn collect_booths(
     output: &mut impl Write,
     existing: &Config,
 ) -> Result<Vec<BoothAnswer>> {
+    section(output, "Booths (optional)")?;
+    explain(
+        output,
+        &[
+            "A booth's on-device debug server powers the System Health and Debug",
+            "screens. This is only for booths you operate — skip it otherwise; the",
+            "messages/questions/stats screens work without any booth configured.",
+        ],
+    )?;
     let mut booths = Vec::new();
     if !existing.booths.is_empty()
         && prompt_yes_no(
@@ -204,6 +261,20 @@ fn collect_booths(
     }
 
     while prompt_yes_no(input, output, "Add a booth debug connection?", false)? {
+        explain(
+            output,
+            &[
+                "id:           the booth's stable identifier (matches the API's boothId).",
+                "display name: an optional friendly label shown in the UI.",
+                "debug URL:    the debug server, e.g. https://<booth>.<tailnet>.ts.net/",
+                "              from Tailscale Serve or https://<lan-ip>:8443 (LAN TLS).",
+                "bearer token: the static token the debug server requires; stored in a",
+                "              separate owner-only secrets file, never in config.toml.",
+                "TLS SHA-256:  for an https:// LAN server with a self-signed certificate,",
+                "              paste the cert's SHA-256 fingerprint (lower-case hex) to pin",
+                "              it. Leave blank for http:// connections.",
+            ],
+        )?;
         let Some(id) = prompt_required(input, output, "Booth id")? else {
             break;
         };
@@ -214,7 +285,7 @@ fn collect_booths(
                 input,
                 output,
                 "Debug server URL",
-                "http://localhost:8080",
+                "https://telephone-booth.example.ts.net/",
             )?,
             debug_token: prompt_optional(input, output, "Debug bearer token")?,
             pinned_sha256: prompt_optional(input, output, "Pinned TLS SHA-256")?,
@@ -266,26 +337,117 @@ fn should_sign_in(session: &SharedSession, output: &mut impl Write) -> Result<bo
     )
 }
 
-/// Run the device-authorization sign-in, displaying the verification URL and
-/// code and polling until the operator approves.
-async fn sign_in(session: &SharedSession, output: &mut impl Write) -> Result<()> {
-    writeln!(output, "\nSigning in to the operator API…")?;
+/// Sign in interactively, retrying on failure until it succeeds or the operator
+/// chooses to skip. Prints a short explanation of the device-code flow first.
+async fn sign_in_with_retry(session: &SharedSession, output: &mut impl Write) -> Result<()> {
+    section(output, "Sign in")?;
+    explain(
+        output,
+        &[
+            "We'll show a short code and a URL. Open the URL on any device, enter",
+            "the code, and approve the request — then this finishes automatically.",
+            "Your refresh token is saved to the OS keychain, never to a file.",
+        ],
+    )?;
+    loop {
+        match sign_in_once(session, output).await {
+            Ok(()) => {
+                writeln!(output, "Signed in.")?;
+                return Ok(());
+            }
+            Err(err) => {
+                writeln!(output, "\nSign-in did not complete: {err}")?;
+                if !ask_retry(output)? {
+                    writeln!(
+                        output,
+                        "Skipping sign-in. You can log in later from the app: press ? then L,"
+                    )?;
+                    writeln!(output, "or open Settings and press L.")?;
+                    return Ok(());
+                }
+            }
+        }
+    }
+}
+
+/// One device-authorization attempt: request a code, display it, open the
+/// browser when possible, and poll until the operator approves.
+async fn sign_in_once(session: &SharedSession, output: &mut impl Write) -> Result<()> {
+    writeln!(output, "\nRequesting a device code…")?;
+    output.flush()?;
     let authorization = session.client().begin_device_authorization().await?;
+
+    let target = authorization
+        .verification_uri_complete
+        .as_deref()
+        .unwrap_or(&authorization.verification_uri);
+
+    writeln!(output, "\n  To sign in:")?;
     writeln!(
         output,
-        "Open {} and enter the code: {}",
-        authorization.verification_uri, authorization.user_code
+        "    1. Open:       {}",
+        authorization.verification_uri
+    )?;
+    writeln!(output, "    2. Enter code: {}", authorization.user_code)?;
+    writeln!(
+        output,
+        "    Code expires in: {}",
+        format_device_code_lifetime(authorization.expires_in),
     )?;
     if let Some(complete) = &authorization.verification_uri_complete {
-        writeln!(output, "…or open this URL directly: {complete}")?;
+        writeln!(output, "    (or open this one-tap link: {complete})")?;
     }
-    writeln!(output, "Waiting for approval…")?;
+    if try_open_browser(target) {
+        writeln!(output, "\n  Opened your browser to the verification page.")?;
+    }
+    writeln!(output, "\nWaiting for you to approve…")?;
     output.flush()?;
 
     let tokens = session.client().poll_for_token(&authorization).await?;
     session.complete_login(&tokens, OffsetDateTime::now_utc())?;
-    writeln!(output, "Signed in.")?;
     Ok(())
+}
+
+/// Ask whether to retry a failed sign-in. The `StdinLock` is confined to this
+/// synchronous helper so the async sign-in flow stays `Send`.
+fn ask_retry(output: &mut impl Write) -> Result<bool> {
+    let stdin = io::stdin();
+    let mut input = stdin.lock();
+    prompt_yes_no(&mut input, output, "Try signing in again?", true)
+}
+
+/// Best-effort: open `url` in the platform browser, returning whether the
+/// opener launched. Never blocks (the child is not awaited) and never fails the
+/// flow — the URL is always printed too.
+fn try_open_browser(url: &str) -> bool {
+    let mut command = if cfg!(target_os = "macos") {
+        let mut command = Command::new("open");
+        command.arg(url);
+        command
+    } else if cfg!(target_os = "windows") {
+        let mut command = Command::new("cmd");
+        command.args(["/C", "start", "", url]);
+        command
+    } else {
+        let mut command = Command::new("xdg-open");
+        command.arg(url);
+        command
+    };
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .is_ok()
+}
+
+/// Format the provider-reported device-code lifetime for setup output.
+fn format_device_code_lifetime(seconds: i64) -> String {
+    let seconds = seconds.max(0);
+    if seconds < 60 {
+        return format!("{seconds}s");
+    }
+    format!("{}m {:02}s", seconds / 60, seconds % 60)
 }
 
 /// Validate the operator API connection by fetching the signed-in profile.
@@ -308,6 +470,48 @@ async fn validate(config: &Config, session: SharedSession, output: &mut impl Wri
         )?,
     }
     Ok(())
+}
+
+/// Print a section header to visually group related prompts.
+fn section(output: &mut impl Write, title: &str) -> Result<()> {
+    writeln!(output, "\n{title}")?;
+    writeln!(output, "{}", "-".repeat(title.len()))?;
+    Ok(())
+}
+
+/// Print indented explanatory lines beneath a section header.
+fn explain(output: &mut impl Write, lines: &[&str]) -> Result<()> {
+    for line in lines {
+        writeln!(output, "  {line}")?;
+    }
+    Ok(())
+}
+
+/// Prompt for a colour theme, listing the available palettes and accepting
+/// either a name or its list number. Returns `default` on empty input.
+fn prompt_theme(
+    input: &mut impl BufRead,
+    output: &mut impl Write,
+    default: &str,
+) -> Result<String> {
+    writeln!(output, "Available colour themes:")?;
+    for (index, name) in theme::NAMES.iter().enumerate() {
+        writeln!(output, "  {}. {name}", index + 1)?;
+    }
+    loop {
+        let answer = prompt_line(input, output, "Theme (name or number)", default)?;
+        if let Ok(number) = answer.parse::<usize>() {
+            if let Some(name) = number
+                .checked_sub(1)
+                .and_then(|index| theme::NAMES.get(index))
+            {
+                return Ok((*name).to_owned());
+            }
+        } else if theme::NAMES.contains(&answer.as_str()) {
+            return Ok(answer);
+        }
+        writeln!(output, "Please enter a listed theme name or number.")?;
+    }
 }
 
 /// Read one trimmed line, returning `None` at end-of-input.
@@ -406,9 +610,9 @@ mod tests {
 
     #[test]
     fn accepts_defaults_on_empty_input() {
-        // Operator URL (blank → default), default OIDC (blank → yes default),
-        // no booths (blank → no default).
-        let answers = collect("\n\n\n", &Config::default());
+        // Operator URL, default OIDC (yes), theme, nerd fonts, then no booths —
+        // all blank to accept each default.
+        let answers = collect("\n\n\n\n\n", &Config::default());
         assert_eq!(answers, default_answers());
     }
 
@@ -418,6 +622,7 @@ mod tests {
             operator_base_url: config.operator.base_url,
             auth: config.auth,
             theme: config.ui.theme,
+            nerd_fonts: config.ui.nerd_fonts,
             poll_interval_ms: config.ui.poll_interval_ms,
             booths: Vec::new(),
         }
@@ -431,6 +636,8 @@ mod tests {
             "https://auth.example/o/app\n",
             "client-xyz\n",
             "openid offline_access\n",
+            "4\n",            // theme → catppuccin-latte (by number)
+            "n\n",            // disable nerd fonts
             "y\n",            // add a booth
             "booth-1\n",      // id
             "Lobby\n",        // display name
@@ -445,11 +652,16 @@ mod tests {
         assert_eq!(answers.auth.issuer, "https://auth.example/o/app");
         assert_eq!(answers.auth.client_id, "client-xyz");
         assert_eq!(answers.auth.scopes, "openid offline_access");
+        assert_eq!(answers.theme, "catppuccin-latte");
+        assert!(!answers.nerd_fonts);
         assert_eq!(answers.booths.len(), 1);
         let booth = &answers.booths[0];
         assert_eq!(booth.id, "booth-1");
         assert_eq!(booth.name.as_deref(), Some("Lobby"));
-        assert_eq!(booth.debug_base_url, "http://localhost:8080");
+        assert_eq!(
+            booth.debug_base_url,
+            "https://telephone-booth.example.ts.net/"
+        );
         assert_eq!(booth.debug_token.as_deref(), Some("super-secret"));
         assert!(booth.pinned_sha256.is_none());
     }
@@ -460,11 +672,12 @@ mod tests {
             operator_base_url: "https://api.example.test".to_owned(),
             auth: AuthConfig::default(),
             theme: "bell-canada".to_owned(),
+            nerd_fonts: true,
             poll_interval_ms: 5_000,
             booths: vec![BoothAnswer {
                 id: "booth-1".to_owned(),
                 name: None,
-                debug_base_url: "http://localhost:8080".to_owned(),
+                debug_base_url: "https://telephone-booth.example.ts.net/".to_owned(),
                 debug_token: Some("secret".to_owned()),
                 pinned_sha256: None,
             }],
@@ -504,8 +717,9 @@ mod tests {
             }],
             ..Config::default()
         };
-        // operator default, default OIDC, keep booths (yes), add another (no).
-        let answers = collect("\n\ny\nn\n", &existing);
+        // operator default, default OIDC, theme, nerd fonts, keep booths (yes),
+        // add another (no).
+        let answers = collect("\n\n\n\ny\nn\n", &existing);
         assert_eq!(answers.booths.len(), 1);
         assert_eq!(answers.booths[0].debug_token.as_deref(), Some("tok"));
     }
