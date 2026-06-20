@@ -1,0 +1,21 @@
+{
+  "name": "Telephone-Booth-Operator-CLI",
+  "image": "mcr.microsoft.com/vscode/devcontainers/base:ubuntu26.04",
+  "features": {
+    "ghcr.io/djensenius/dfj-container/dfj-container:latest": {},
+    "ghcr.io/devcontainers/features/rust:1": {
+      "version": "1.95.0",
+      "profile": "minimal"
+    }
+  },
+  "postCreateCommand": "sudo apt-get update && sudo apt-get install -y --no-install-recommends libasound2-dev pkg-config && cargo fetch",
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "DavidAnson.vscode-markdownlint",
+        "rust-lang.rust-analyzer",
+        "tamasfe.even-better-toml"
+      ]
+    }
+  }
+}
