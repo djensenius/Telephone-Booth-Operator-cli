@@ -1,23 +1,29 @@
-//! Background polling of `GET /v1/status` for the Status screen.
+//! Background loading of booth status for the Status screen.
 
 use std::time::{Duration, Instant};
 
+use futures::StreamExt;
 use tokio::sync::mpsc::error::TryRecvError;
 use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
+use tracing::warn;
 
-use tbo_core::domain::BoothStatus;
+use tbo_core::domain::{BoothStatus, WsEnvelope};
 use tbo_operator_client::{HttpTransport, OperatorClient, ReqwestTransport, TokenProvider};
 
 use crate::data::{Remote, SessionTokenProvider};
 
 /// How often the Status screen auto-refreshes while focused.
 const POLL_INTERVAL: Duration = Duration::from_secs(5);
+/// Initial delay before reconnecting the live status socket.
+const WS_RECONNECT_INITIAL: Duration = Duration::from_secs(1);
+/// Maximum delay between live status socket reconnect attempts.
+const WS_RECONNECT_MAX: Duration = Duration::from_secs(30);
 
-/// Polls booth status off the UI thread and tracks the latest value.
+/// Tracks booth status off the UI thread and keeps the latest value.
 ///
-/// `refresh` spawns a fetch on the `tokio` runtime; `drain` (called each tick)
-/// applies the completed result, and `tick` additionally re-polls on a fixed
-/// cadence while the screen is focused.
+/// `refresh` spawns the backup REST poll on the `tokio` runtime; `tick` starts
+/// a bearer-authenticated live WebSocket while the screen is focused and also
+/// keeps the REST poll running on a fixed cadence to fill gaps.
 pub struct StatusController<T = ReqwestTransport, A = SessionTokenProvider>
 where
     T: HttpTransport + Clone + 'static,
@@ -26,6 +32,7 @@ where
     client: OperatorClient<T, A>,
     state: Remote<BoothStatus>,
     rx: Option<UnboundedReceiver<std::result::Result<BoothStatus, String>>>,
+    live_rx: Option<UnboundedReceiver<BoothStatus>>,
     in_flight: bool,
     last_refresh: Option<Instant>,
 }
@@ -41,6 +48,7 @@ where
             client,
             state: Remote::Idle,
             rx: None,
+            live_rx: None,
             in_flight: false,
             last_refresh: None,
         }
@@ -79,6 +87,12 @@ where
 
     /// Apply any completed fetch (non-blocking). Called each tick.
     pub fn drain(&mut self) {
+        self.drain_poll();
+        self.drain_live();
+    }
+
+    /// Apply any completed REST poll (non-blocking).
+    fn drain_poll(&mut self) {
         loop {
             let Some(rx) = self.rx.as_mut() else {
                 return;
@@ -102,8 +116,67 @@ where
     /// is `focused` and the poll interval has elapsed.
     pub fn tick(&mut self, focused: bool) {
         self.drain();
-        if focused && self.is_due(Instant::now()) {
-            self.refresh();
+        if focused {
+            self.ensure_live();
+            if self.is_due(Instant::now()) {
+                self.refresh();
+            }
+        }
+    }
+
+    /// Start the live status socket worker if it is not already running.
+    fn ensure_live(&mut self) {
+        if self.live_rx.is_some() {
+            return;
+        }
+        let (tx, rx) = unbounded_channel();
+        self.live_rx = Some(rx);
+        let client = self.client.clone();
+        tokio::spawn(async move {
+            let mut backoff = WS_RECONNECT_INITIAL;
+            loop {
+                match client.status_stream().await {
+                    Ok(mut stream) => {
+                        backoff = WS_RECONNECT_INITIAL;
+                        while let Some(item) = stream.next().await {
+                            match item {
+                                Ok(WsEnvelope::Status { status }) => {
+                                    if tx.send(status).is_err() {
+                                        return;
+                                    }
+                                }
+                                Ok(_) => {}
+                                Err(err) => {
+                                    warn!(error = %err, "status WebSocket stream ended with error");
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    Err(err) => {
+                        warn!(error = %err, "failed to connect status WebSocket");
+                    }
+                }
+                tokio::time::sleep(backoff).await;
+                backoff = std::cmp::min(backoff * 2, WS_RECONNECT_MAX);
+            }
+        });
+    }
+
+    /// Apply any live status frames (non-blocking).
+    fn drain_live(&mut self) {
+        loop {
+            let Some(rx) = self.live_rx.as_mut() else {
+                return;
+            };
+            match rx.try_recv() {
+                Ok(status) => self.apply_status(status, Instant::now()),
+                Err(TryRecvError::Empty) => return,
+                Err(TryRecvError::Disconnected) => {
+                    self.live_rx = None;
+                    return;
+                }
+            }
         }
     }
 
@@ -122,13 +195,24 @@ where
         self.in_flight = false;
         self.last_refresh = Some(now);
         self.rx = None;
-        self.state = match result {
-            Ok(value) => Remote::Ready {
-                value,
-                fetched_at: now,
-            },
-            Err(error) => Remote::Failed { error, at: now },
-        };
+        match result {
+            Ok(value) => self.apply_status(value, now),
+            Err(error) => {
+                if !matches!(self.state, Remote::Ready { .. }) {
+                    self.state = Remote::Failed { error, at: now };
+                }
+            }
+        }
+    }
+
+    /// Apply a status update when it is not older than the visible value.
+    fn apply_status(&mut self, value: BoothStatus, fetched_at: Instant) {
+        if let Remote::Ready { value: current, .. } = &self.state
+            && value.updated_at < current.updated_at
+        {
+            return;
+        }
+        self.state = Remote::Ready { value, fetched_at };
     }
 
     /// Await and apply the next pending result (test helper).
@@ -148,6 +232,7 @@ mod tests {
 
     use std::sync::{Arc, Mutex};
 
+    use tbo_core::domain::BoothState;
     use tbo_operator_client::{HttpResponse, HttpTransport, Result, StaticTokenProvider};
 
     use super::*;
@@ -187,6 +272,25 @@ mod tests {
         StatusController::new(client)
     }
 
+    fn booth_status(state: BoothState, updated_at: &str) -> BoothStatus {
+        serde_json::from_str(&format!(
+            r#"{{"state":"{}","updatedAt":"{updated_at}"}}"#,
+            match state {
+                BoothState::Idle => "idle",
+                BoothState::DialTone => "dialTone",
+                BoothState::Dialing => "dialing",
+                BoothState::PlayingQuestion => "playingQuestion",
+                BoothState::Beep => "beep",
+                BoothState::Recording => "recording",
+                BoothState::Uploading => "uploading",
+                BoothState::PlayingMessage => "playingMessage",
+                BoothState::PlayingInstructions => "playingInstructions",
+                BoothState::Error => "error",
+            }
+        ))
+        .unwrap()
+    }
+
     #[tokio::test]
     async fn refresh_loads_status_into_ready() {
         let mut controller = controller(
@@ -211,6 +315,37 @@ mod tests {
 
         assert!(matches!(controller.state(), Remote::Failed { .. }));
         assert!(!controller.is_refreshing());
+    }
+
+    #[test]
+    fn live_status_applies_immediately() {
+        let mut controller = controller(500, "boom");
+
+        controller.apply_status(
+            booth_status(BoothState::Recording, "2026-01-01T00:00:01Z"),
+            Instant::now(),
+        );
+
+        assert!(matches!(
+            controller.state(),
+            Remote::Ready { value, .. } if value.state == BoothState::Recording
+        ));
+    }
+
+    #[test]
+    fn stale_poll_does_not_replace_newer_live_status() {
+        let mut controller = controller(500, "boom");
+
+        controller.apply_status(
+            booth_status(BoothState::Recording, "2026-01-01T00:00:02Z"),
+            Instant::now(),
+        );
+        controller.apply(Ok(booth_status(BoothState::Idle, "2026-01-01T00:00:01Z")));
+
+        assert!(matches!(
+            controller.state(),
+            Remote::Ready { value, .. } if value.state == BoothState::Recording
+        ));
     }
 
     #[tokio::test]
