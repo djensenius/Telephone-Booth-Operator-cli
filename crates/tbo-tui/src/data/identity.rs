@@ -97,6 +97,11 @@ where
         self.profile = None;
         self.last_refresh = None;
         self.revoked = false;
+        // Drop any in-flight fetch and its receiver so a result requested for
+        // the previous session can never be applied to the next one, and the
+        // next sign-in always starts a fresh identity request.
+        self.rx = None;
+        self.in_flight = false;
     }
 
     /// Trigger an identity re-fetch unless one is already in flight.
@@ -317,5 +322,23 @@ mod tests {
         assert!(controller.is_due(now + REVALIDATE_INTERVAL));
         controller.in_flight = true;
         assert!(!controller.is_due(now + REVALIDATE_INTERVAL));
+    }
+
+    #[tokio::test]
+    async fn reset_clears_in_flight_request() {
+        let (mut controller, _handle) = controller(200, ADMIN_ME);
+        // Simulate a sign-out while a re-validation is still in flight.
+        controller.refresh();
+        assert!(controller.in_flight);
+        assert!(controller.rx.is_some());
+
+        controller.reset();
+
+        // The stale request and its receiver are dropped so the next sign-in
+        // starts fresh instead of adopting the previous session's result.
+        assert!(!controller.in_flight);
+        assert!(controller.rx.is_none());
+        assert!(!controller.is_known());
+        assert!(controller.is_due(Instant::now()));
     }
 }

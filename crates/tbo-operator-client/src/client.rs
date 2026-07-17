@@ -234,6 +234,12 @@ impl<T: HttpTransport, A: TokenProvider> OperatorClient<T, A> {
     pub async fn stats_overview(&self, window: Option<StatsWindow>) -> Result<StatsOverview> {
         let mut query = Vec::new();
         if let Some(window) = window {
+            if window == StatsWindow::Custom {
+                return Err(OperatorError::InvalidRequest(
+                    "custom ranges must be requested via stats_overview_range with start/end"
+                        .to_owned(),
+                ));
+            }
             query.push(("window", window.as_query().to_owned()));
         }
         self.get_json("/v1/stats/overview", &query, true).await
@@ -1111,6 +1117,21 @@ mod tests {
         assert_eq!(calls[0].path, "/v1/stats/overview");
         assert_eq!(calls[0].query, vec![("window".to_owned(), "7d".to_owned())]);
         assert_eq!(calls[0].bearer.as_deref(), Some("token-123"));
+    }
+
+    #[tokio::test]
+    async fn stats_overview_rejects_custom_window() {
+        let transport = FakeTransport::with_responses(vec![]);
+        let client = authed(transport.clone());
+
+        let err = client
+            .stats_overview(Some(StatsWindow::Custom))
+            .await
+            .unwrap_err();
+
+        assert!(matches!(err, OperatorError::InvalidRequest(_)));
+        // The unsupported request must never reach the network.
+        assert!(transport.calls().is_empty());
     }
 
     #[tokio::test]
