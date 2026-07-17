@@ -82,6 +82,21 @@ jobs:
         with:
           name: deb-${{ matrix.target }}
           path: target/${{ matrix.target }}/debian/*.deb
+      # Reuse the cross-built binary to publish a Homebrew (Linux) tarball for
+      # the arches Homebrew-on-Linux supports: x86_64 (intel) and arm64 (arm).
+      # armv7 is skipped because Homebrew has no 32-bit ARM support.
+      - name: Pack Homebrew tarball
+        if: ${{ matrix.target == 'x86_64-unknown-linux-gnu' || matrix.target == 'aarch64-unknown-linux-gnu' }}
+        run: |
+          mkdir -p dist
+          tar -C target/${{ matrix.target }}/release \
+              -czf dist/tb-operator-${{ matrix.target }}.tar.gz \
+              tb-operator
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        if: ${{ matrix.target == 'x86_64-unknown-linux-gnu' || matrix.target == 'aarch64-unknown-linux-gnu' }}
+        with:
+          name: tarball-${{ matrix.target }}
+          path: dist/*.tar.gz
 
   build-tarball:
     name: build tarball (${{ matrix.target }})
@@ -165,19 +180,65 @@ jobs:
         run: |
           set -euo pipefail
           version="${TAG#v}"
-          asset="tb-operator-aarch64-apple-darwin.tar.gz"
-          url="https://github.com/${REPO}/releases/download/${TAG}/${asset}"
+          base="https://github.com/${REPO}/releases/download/${TAG}"
+
+          macos_arm_asset="tb-operator-aarch64-apple-darwin.tar.gz"
+          linux_x86_asset="tb-operator-x86_64-unknown-linux-gnu.tar.gz"
+          linux_arm_asset="tb-operator-aarch64-unknown-linux-gnu.tar.gz"
 
           # Hash exactly what users will download.
-          gh release download "$TAG" --repo "$REPO" --pattern "$asset" --dir .
-          sha="$(sha256sum "$asset" | cut -d' ' -f1)"
-          echo "version=$version sha256=$sha"
+          gh release download "$TAG" --repo "$REPO" --dir dl \
+            --pattern "$macos_arm_asset" \
+            --pattern "$linux_x86_asset" \
+            --pattern "$linux_arm_asset"
+          sha() { sha256sum "dl/$1" | cut -d' ' -f1; }
+          macos_arm_sha="$(sha "$macos_arm_asset")"
+          linux_x86_sha="$(sha "$linux_x86_asset")"
+          linux_arm_sha="$(sha "$linux_arm_asset")"
+          echo "version=$version"
 
           git clone "https://x-access-token:${TAP_TOKEN}@github.com/djensenius/homebrew-tap.git" tap
           formula="tap/Formula/telephone-booth-operator-cli.rb"
-          sed -i -E "s|^  version \".*\"|  version \"${version}\"|" "$formula"
-          sed -i -E "s|^      url \".*\"|      url \"${url}\"|" "$formula"
-          sed -i -E "s|^      sha256 \"[0-9a-f]+\"|      sha256 \"${sha}\"|" "$formula"
+
+          # Regenerate the whole formula so every platform's url/sha256 stays in
+          # sync (a single sed can't disambiguate the per-platform blocks).
+          cat > "$formula" <<EOF
+          class TelephoneBoothOperatorCli < Formula
+            desc "Terminal operator console (TUI) for the Telephone-Booth installation"
+            homepage "https://github.com/djensenius/Telephone-Booth-Operator-cli"
+            version "${version}"
+            license "Apache-2.0"
+  
+            # Prebuilt binaries. The release pipeline regenerates this file
+            # (version, urls, and sha256s) on each tagged, non-draft release.
+            # macOS is Apple Silicon only; Linux covers x86_64 and arm64.
+            on_macos do
+              on_arm do
+                url "${base}/${macos_arm_asset}"
+                sha256 "${macos_arm_sha}"
+              end
+            end
+  
+            on_linux do
+              on_intel do
+                url "${base}/${linux_x86_asset}"
+                sha256 "${linux_x86_sha}"
+              end
+              on_arm do
+                url "${base}/${linux_arm_asset}"
+                sha256 "${linux_arm_sha}"
+              end
+            end
+  
+            def install
+              bin.install "tb-operator"
+            end
+  
+            test do
+              assert_match "tb-operator", shell_output("#{bin}/tb-operator --version")
+            end
+          end
+          EOF
 
           cd tap
           if git diff --quiet; then
