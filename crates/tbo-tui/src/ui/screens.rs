@@ -117,22 +117,24 @@ impl Screen {
             Screen::SystemHealth => '8',
             Screen::Debug => '9',
             Screen::Tokens => '0',
-            Screen::Settings => 's',
-            Screen::About => 'a',
+            Screen::Settings => 'S',
+            Screen::About => 'A',
         }
     }
 
-    /// Resolve a palette keyboard shortcut to a screen.
+    /// Resolve a palette keyboard shortcut to a screen. Letter shortcuts are
+    /// deliberately uppercase (Shift-A / Shift-S) so they never collide with the
+    /// lowercase per-screen action keys (e.g. `a`/`s` on Messages/Questions).
     #[must_use]
     pub fn from_nav_key(key: char) -> Option<Screen> {
-        match key.to_ascii_lowercase() {
+        match key {
             '1'..='9' => key
                 .to_digit(10)
                 .and_then(|digit| usize::try_from(digit.saturating_sub(1)).ok())
                 .and_then(Screen::from_index),
             '0' => Some(Screen::Tokens),
-            's' => Some(Screen::Settings),
-            'a' => Some(Screen::About),
+            'S' => Some(Screen::Settings),
+            'A' => Some(Screen::About),
             _ => None,
         }
     }
@@ -3201,6 +3203,11 @@ mod tests {
             assert_eq!(Screen::from_nav_key(screen.nav_key()), Some(*screen));
         }
         assert_eq!(Screen::from_nav_key('S'), Some(Screen::Settings));
+        assert_eq!(Screen::from_nav_key('A'), Some(Screen::About));
+        // Lowercase letters are reserved for per-screen actions, so they must
+        // not resolve as navigation shortcuts.
+        assert_eq!(Screen::from_nav_key('s'), None);
+        assert_eq!(Screen::from_nav_key('a'), None);
         assert_eq!(Screen::from_nav_key('x'), None);
     }
 

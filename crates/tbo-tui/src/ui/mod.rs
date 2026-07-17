@@ -23,6 +23,12 @@ use crate::ui::toast::{Level, Toasts};
 
 /// Render the entire UI for one frame.
 pub fn render(app: &App, frame: &mut Frame) {
+    // Until an operator signs in, present only the login gate so no other part
+    // of the interface is reachable or visible.
+    if !app.is_authenticated() {
+        render_login_gate(app, frame);
+        return;
+    }
     let areas = Layout::vertical([
         Constraint::Length(3),
         Constraint::Min(0),
@@ -251,6 +257,54 @@ fn render_modal(modal: &Modal, theme: &Theme, frame: &mut Frame, area: Rect) {
             .block(block),
         rect,
     );
+}
+
+/// Render the sign-in gate shown before an operator session exists. Only the
+/// login instructions (and the device code while a login is in progress) are
+/// presented, keeping the rest of the interface hidden until authenticated.
+fn render_login_gate(app: &App, frame: &mut Frame) {
+    let theme = app.theme();
+    let icons = app.icons();
+    let area = frame.area();
+    frame.render_widget(Clear, area);
+
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    lines.push(Line::from(Span::styled(
+        format!("{}tb-operator", icons.brand()),
+        Style::new().fg(theme.accent).add_modifier(Modifier::BOLD),
+    )));
+    lines.push(Line::raw(""));
+    lines.push(Line::from(Span::styled(
+        "Sign in to the operator API to continue.",
+        Style::new().fg(theme.fg),
+    )));
+    lines.push(Line::raw(""));
+    push_help_account(&mut lines, theme, icons, app.auth().phase());
+    lines.push(Line::raw(""));
+    let hint = if app.auth().is_in_progress() {
+        "Esc cancel login · q quit"
+    } else {
+        "L log in · q quit"
+    };
+    lines.push(Line::from(Span::styled(hint, Style::new().fg(theme.dim))));
+
+    let width = 60.min(area.width.saturating_sub(4)).max(30);
+    let height = u16::try_from(lines.len())
+        .unwrap_or(10)
+        .saturating_add(2)
+        .min(area.height);
+    let rect = center(area, width, height);
+    let block = Block::bordered()
+        .border_style(Style::new().fg(theme.accent))
+        .title(format!(" {}Sign in ", icons.brand()));
+    frame.render_widget(
+        Paragraph::new(lines)
+            .wrap(Wrap { trim: false })
+            .block(block),
+        rect,
+    );
+
+    render_toasts(app.toasts(), theme, icons, frame, area);
 }
 
 /// Render the `?` screen palette plus a live account section with

@@ -73,7 +73,7 @@ impl App {
         let auth = AuthController::new(Arc::clone(&session))?;
         match auth.phase() {
             AuthPhase::SignedIn { .. } => toasts.info("Signed in to the operator API."),
-            _ => toasts.warn("Not signed in. Open Settings and press L to log in."),
+            _ => toasts.warn("Not signed in. Press L to log in."),
         }
 
         let api: crate::data::OperatorApi = OperatorClient::new(
@@ -267,6 +267,13 @@ impl App {
         &self.auth
     }
 
+    /// Whether an operator session is established. While this is `false` the
+    /// interface is gated behind the login prompt and no screen is reachable.
+    #[must_use]
+    pub fn is_authenticated(&self) -> bool {
+        matches!(self.auth.phase(), AuthPhase::SignedIn { .. })
+    }
+
     /// The booth-status controller (drives the Status screen).
     #[must_use]
     pub fn status(&self) -> &StatusController {
@@ -358,6 +365,7 @@ impl App {
                         );
                         self.auth.sign_out(&mut self.toasts);
                         self.identity.reset();
+                        self.show_help = false;
                     }
                     // If the operator no longer has affirmative admin access
                     // while an admin-only screen is focused — whether their tier
@@ -407,6 +415,12 @@ impl App {
             self.handle_modal_key(key);
             return;
         }
+        // Until an operator signs in, the whole interface is gated behind the
+        // login prompt: only logging in, cancelling, and quitting are allowed.
+        if !self.is_authenticated() {
+            self.handle_locked_key(key);
+            return;
+        }
         // The help overlay likewise captures input (and offers login/logout).
         if self.show_help {
             self.handle_help_key(key);
@@ -447,7 +461,7 @@ impl App {
             KeyCode::Char('f' | 'F') if self.screen == Screen::Events => {
                 self.events.toggle_follow();
             }
-            KeyCode::Char('a' | 'A') if self.screen == Screen::Messages => {
+            KeyCode::Char('a') if self.screen == Screen::Messages => {
                 self.message_action(MessagesController::approve_selected);
             }
             KeyCode::Char('x' | 'X') if self.screen == Screen::Messages => {
@@ -465,7 +479,7 @@ impl App {
             KeyCode::Char('d' | 'D') if self.screen == Screen::Messages => {
                 self.open_delete_confirm();
             }
-            KeyCode::Char('a' | 'A') if self.screen == Screen::Questions => {
+            KeyCode::Char('a') if self.screen == Screen::Questions => {
                 self.question_action(QuestionsController::activate_selected);
             }
             KeyCode::Char('e' | 'E') if self.screen == Screen::Questions => {
@@ -485,9 +499,7 @@ impl App {
             KeyCode::Char(' ') if matches!(self.screen, Screen::Messages | Screen::Questions) => {
                 self.toggle_playback();
             }
-            KeyCode::Char('s' | 'S')
-                if matches!(self.screen, Screen::Messages | Screen::Questions) =>
-            {
+            KeyCode::Char('s') if matches!(self.screen, Screen::Messages | Screen::Questions) => {
                 self.stop_playback();
             }
             KeyCode::Char('n' | 'N') if self.screen == Screen::Tokens => {
@@ -533,7 +545,7 @@ impl App {
                 self.auth.sign_out(&mut self.toasts);
             }
             KeyCode::Char('t' | 'T') if self.screen == Screen::Settings => self.cycle_theme(),
-            KeyCode::Char(c) if c.is_ascii_digit() => self.jump_to_nav_key(c),
+            KeyCode::Char(c) if Self::is_screen_palette_key(c) => self.jump_to_nav_key(c),
             _ => {}
         }
     }
@@ -1165,6 +1177,25 @@ impl App {
         }
     }
 
+    /// Route a key while the interface is gated behind the login prompt (no
+    /// session established). Only login, cancellation, and quit are available;
+    /// every other key is ignored so no gated screen or action is reachable.
+    fn handle_locked_key(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Char('q') => self.should_quit = true,
+            KeyCode::Char('l' | 'L') => self.begin_login(),
+            KeyCode::Esc => {
+                if self.auth.is_in_progress() {
+                    self.auth.cancel();
+                    self.toasts.info("Login cancelled.");
+                } else {
+                    self.should_quit = true;
+                }
+            }
+            _ => {}
+        }
+    }
+
     /// Route a key to the `?` help overlay: close it, or run login/logout. The
     /// overlay stays open during login so the device code stays visible.
     fn handle_help_key(&mut self, key: KeyEvent) {
@@ -1177,7 +1208,10 @@ impl App {
                 self.show_help = false;
             }
             KeyCode::Char('l' | 'L') => self.begin_login(),
-            KeyCode::Char('o' | 'O') => self.auth.sign_out(&mut self.toasts),
+            KeyCode::Char('o' | 'O') => {
+                self.auth.sign_out(&mut self.toasts);
+                self.show_help = false;
+            }
             _ => {}
         }
     }
