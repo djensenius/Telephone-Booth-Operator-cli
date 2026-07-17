@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.0](https://github.com/djensenius/Telephone-Booth-Operator-cli/compare/v0.2.3...v0.3.0) (2026-07-17)
+
+
+### Features
+
+* live booth status over the operator WebSocket ([#81](https://github.com/djensenius/Telephone-Booth-Operator-cli/issues/81)) ([6117518](https://github.com/djensenius/Telephone-Booth-Operator-cli/commit/6117518697c0b10487cd8a4d94a49605389a1120))
+
 ## [0.2.3](https://github.com/djensenius/Telephone-Booth-Operator-cli/compare/v0.2.2...v0.2.3) (2026-06-13)
 
 
