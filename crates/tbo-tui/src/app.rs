@@ -194,6 +194,67 @@ impl App {
         self.screen
     }
 
+    /// Whether the signed-in operator is a known administrator. Used by the
+    /// UI to dim/lock admin-only screens in the palette and header.
+    #[must_use]
+    pub fn is_admin(&self) -> bool {
+        self.identity.is_admin()
+    }
+
+    /// The next screen the current operator may open, skipping admin-only
+    /// screens (API tokens, debug) when they are not an administrator.
+    #[must_use]
+    pub fn next_screen(&self) -> Screen {
+        self.reachable_screen(true)
+    }
+
+    /// The previous reachable screen, mirroring [`Self::next_screen`].
+    #[must_use]
+    pub fn prev_screen(&self) -> Screen {
+        self.reachable_screen(false)
+    }
+
+    /// Step forward/backward from the current screen, skipping screens the
+    /// operator may not open. Falls back to the current screen if every other
+    /// screen is gated (which cannot happen in practice).
+    fn reachable_screen(&self, forward: bool) -> Screen {
+        let mut candidate = if forward {
+            self.screen.next()
+        } else {
+            self.screen.prev()
+        };
+        for _ in 0..Screen::count() {
+            if !candidate.is_admin_only() || self.identity.is_admin() {
+                return candidate;
+            }
+            candidate = if forward {
+                candidate.next()
+            } else {
+                candidate.prev()
+            };
+        }
+        self.screen
+    }
+
+    /// Whether the operator may open `screen`, nudging with a toast when they
+    /// may not (non-admin, or permissions not yet loaded). Mirrors
+    /// [`Self::require_question_admin`].
+    fn require_screen_admin(&mut self, screen: Screen) -> bool {
+        if !screen.is_admin_only() || self.identity.is_admin() {
+            return true;
+        }
+        if self.identity.is_known() {
+            self.toasts.warn(format!(
+                "{} requires an administrator account.",
+                screen.title()
+            ));
+        } else {
+            self.toasts
+                .info("Checking your permissions… try again in a moment.");
+        }
+        false
+    }
+
     /// The active toast queue.
     #[must_use]
     pub fn toasts(&self) -> &Toasts {
@@ -298,6 +359,15 @@ impl App {
                         self.auth.sign_out(&mut self.toasts);
                         self.identity.reset();
                     }
+                    // If the operator's tier drops (e.g. revalidation returns
+                    // a non-admin) while an admin-only screen is focused, bounce
+                    // them back to Status so gated content never lingers.
+                    if self.screen.is_admin_only()
+                        && self.identity.is_known()
+                        && !self.identity.is_admin()
+                    {
+                        self.screen = Screen::Status;
+                    }
                     self.status.tick(self.screen == Screen::Status);
                     self.messages.tick(self.screen == Screen::Messages);
                     self.drain_message_actions();
@@ -357,8 +427,8 @@ impl App {
                     self.should_quit = true;
                 }
             }
-            KeyCode::Tab | KeyCode::Right => self.screen = self.screen.next(),
-            KeyCode::BackTab | KeyCode::Left => self.screen = self.screen.prev(),
+            KeyCode::Tab | KeyCode::Right => self.screen = self.next_screen(),
+            KeyCode::BackTab | KeyCode::Left => self.screen = self.prev_screen(),
             KeyCode::Char('u' | 'U') if self.screen == Screen::Settings => {
                 self.open_operator_url_prompt();
             }
@@ -1101,8 +1171,8 @@ impl App {
     fn handle_help_key(&mut self, key: KeyEvent) {
         match key.code {
             KeyCode::Esc | KeyCode::Char('?' | 'q') => self.show_help = false,
-            KeyCode::Tab | KeyCode::Right => self.screen = self.screen.next(),
-            KeyCode::BackTab | KeyCode::Left => self.screen = self.screen.prev(),
+            KeyCode::Tab | KeyCode::Right => self.screen = self.next_screen(),
+            KeyCode::BackTab | KeyCode::Left => self.screen = self.prev_screen(),
             KeyCode::Char(c) if Self::is_screen_palette_key(c) => {
                 self.jump_to_nav_key(c);
                 self.show_help = false;
@@ -1120,7 +1190,9 @@ impl App {
 
     /// Jump to the screen addressed by a palette key, if it exists.
     fn jump_to_nav_key(&mut self, key: char) {
-        if let Some(screen) = Screen::from_nav_key(key) {
+        if let Some(screen) = Screen::from_nav_key(key)
+            && self.require_screen_admin(screen)
+        {
             self.screen = screen;
         }
     }
