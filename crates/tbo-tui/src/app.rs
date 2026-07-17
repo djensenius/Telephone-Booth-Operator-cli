@@ -410,15 +410,20 @@ impl App {
             self.should_quit = true;
             return;
         }
+        // Until an operator signs in, the whole interface is gated behind the
+        // login prompt: only logging in, cancelling, and quitting are allowed.
+        // This check comes first so a modal or help overlay orphaned by a
+        // sign-out (e.g. identity revalidation) can neither dispatch a stale
+        // action on the next key nor linger past a later login.
+        if !self.is_authenticated() {
+            self.modal = None;
+            self.show_help = false;
+            self.handle_locked_key(key);
+            return;
+        }
         // An open modal captures all other input until it is dismissed.
         if self.modal.is_some() {
             self.handle_modal_key(key);
-            return;
-        }
-        // Until an operator signs in, the whole interface is gated behind the
-        // login prompt: only logging in, cancelling, and quitting are allowed.
-        if !self.is_authenticated() {
-            self.handle_locked_key(key);
             return;
         }
         // The help overlay likewise captures input (and offers login/logout).
