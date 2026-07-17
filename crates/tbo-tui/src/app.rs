@@ -5,16 +5,15 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use tbo_auth::{InMemoryTokenStore, KeyringTokenStore, SessionManager, TokenStore};
 use tbo_core::config::Config;
 use tbo_operator_client::OperatorClient;
 use tokio::time::Duration;
 
 use crate::auth::{AuthController, AuthPhase};
 use crate::data::{
-    DebugController, EventsController, MessagesController, PlaybackController, QuestionsController,
-    SessionTokenProvider, SessionsController, SharedSession, StatsController, StatusController,
-    SystemController, SystemHealthController, TokensController,
+    DebugController, EventsController, IdentityController, MessagesController, PlaybackController,
+    QuestionsController, SessionTokenProvider, SessionsController, SharedSession, StatsController,
+    StatusController, SystemController, SystemHealthController, TokensController,
 };
 use crate::event::{AppEvent, EventLoop};
 use crate::tui::Tui;
@@ -37,6 +36,7 @@ pub struct App {
     screen: Screen,
     toasts: Toasts,
     auth: AuthController,
+    identity: IdentityController,
     status: StatusController,
     messages: MessagesController,
     questions: QuestionsController,
@@ -81,6 +81,7 @@ impl App {
             SessionTokenProvider::new(session),
         )?;
         let status = StatusController::new(api.clone());
+        let identity = IdentityController::new(api.clone());
         let messages = MessagesController::new(api.clone());
         let questions = QuestionsController::new(api.clone());
         let sessions = SessionsController::new(api.clone());
@@ -101,6 +102,7 @@ impl App {
             screen: Screen::Status,
             toasts,
             auth,
+            identity,
             status,
             messages,
             questions,
@@ -152,33 +154,14 @@ impl App {
         }
     }
 
-    /// Build the shared session manager, preferring the OS keychain and falling
-    /// back to an ephemeral in-memory store if secure storage is unavailable
-    /// (e.g. no secret service on a headless host, or a locked keychain).
+    /// Build the shared session manager via [`crate::data::build_shared_session`],
+    /// surfacing any fallback warning as a toast.
     fn build_session(config: &Config, toasts: &mut Toasts) -> Result<SharedSession> {
-        match Self::keyring_session(config) {
-            Ok(session) => Ok(session),
-            Err(err) => {
-                toasts.warn(format!(
-                    "Secure storage unavailable ({err}); using an in-memory session this run."
-                ));
-                let store: Box<dyn TokenStore> = Box::new(InMemoryTokenStore::new());
-                let manager = SessionManager::new(&config.auth, store)?;
-                Ok(Arc::new(manager))
-            }
+        let (session, warning) = crate::data::build_shared_session(config)?;
+        if let Some(warning) = warning {
+            toasts.warn(warning);
         }
-    }
-
-    /// Build a keychain-backed session manager, surfacing any keychain
-    /// construction or initial-load error to the caller so the fallback can
-    /// engage.
-    fn keyring_session(config: &Config) -> Result<SharedSession> {
-        let store: Box<dyn TokenStore> = Box::new(KeyringTokenStore::new()?);
-        let manager = SessionManager::new(&config.auth, store)?;
-        // Probe the store now so a keychain read failure triggers the fallback
-        // rather than surfacing later on first use.
-        manager.current_session()?;
-        Ok(Arc::new(manager))
+        Ok(session)
     }
 
     /// The active configuration.
@@ -306,6 +289,15 @@ impl App {
             match events.next().await {
                 AppEvent::Tick => {
                     self.auth.drain(&mut self.toasts);
+                    let signed_in = matches!(self.auth.phase(), AuthPhase::SignedIn { .. });
+                    self.identity.tick(signed_in);
+                    if self.identity.take_revoked() {
+                        self.toasts.error(
+                            "Your operator account is no longer valid; you have been signed out.",
+                        );
+                        self.auth.sign_out(&mut self.toasts);
+                        self.identity.reset();
+                    }
                     self.status.tick(self.screen == Screen::Status);
                     self.messages.tick(self.screen == Screen::Messages);
                     self.drain_message_actions();
@@ -597,9 +589,28 @@ impl App {
         }
     }
 
+    /// Whether the signed-in operator may manage questions, nudging with a
+    /// toast when they may not (non-admin, or permissions not yet loaded).
+    fn require_question_admin(&mut self) -> bool {
+        if self.identity.is_admin() {
+            return true;
+        }
+        if self.identity.is_known() {
+            self.toasts
+                .warn("Managing questions requires an administrator account.");
+        } else {
+            self.toasts
+                .info("Checking your permissions… try again in a moment.");
+        }
+        false
+    }
+
     /// Run a question write action, guarding against overlapping requests and
     /// nudging when there is nothing selected.
     fn question_action(&mut self, action: impl FnOnce(&mut QuestionsController)) {
+        if !self.require_question_admin() {
+            return;
+        }
         if self.questions.is_action_in_flight() {
             self.toasts.warn("An action is already in progress.");
             return;
@@ -613,6 +624,9 @@ impl App {
 
     /// Open a confirmation modal for archiving the selected question.
     fn open_archive_confirm(&mut self) {
+        if !self.require_question_admin() {
+            return;
+        }
         if self.questions.selected_question().is_none() {
             self.toasts.info("Select a question first.");
             return;
@@ -627,6 +641,9 @@ impl App {
     /// Open the first step of the new-question flow (the prompt text); the
     /// second step collects the FLAC file path.
     fn open_new_question_prompt(&mut self) {
+        if !self.require_question_admin() {
+            return;
+        }
         if self.questions.is_action_in_flight() {
             self.toasts.warn("An action is already in progress.");
             return;

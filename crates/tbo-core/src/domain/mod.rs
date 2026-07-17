@@ -7,6 +7,7 @@
 //! from RFC 3339 strings; identifiers and opaque blobs stay as [`String`] /
 //! [`serde_json::Value`] to stay forward-compatible.
 
+pub mod admin;
 pub mod ai;
 pub mod booth;
 pub mod common;
@@ -21,6 +22,7 @@ pub mod token;
 pub mod upload;
 pub mod ws;
 
+pub use admin::DataImportSummary;
 pub use ai::{
     AiProvider, Moderation, ModerationRecommendation, Transcription, TranscriptionList,
     TranscriptionStatus,
@@ -35,8 +37,8 @@ pub use operator::OperatorMe;
 pub use question::{Question, QuestionCreate, QuestionList, QuestionStatus};
 pub use session::{CallOutcome, CallSession, CallSessionDetail, CallSessionList};
 pub use stats::{
-    StatsBoothBreakdown, StatsBusiest, StatsCallsPerDay, StatsHourlyBucket, StatsOverview,
-    StatsTopQuestion, StatsWindow,
+    MetricFilter, MetricFilterInput, StatsBoothBreakdown, StatsBusiest, StatsCallsPerDay,
+    StatsHourlyBucket, StatsOverview, StatsTopQuestion, StatsWindow,
 };
 pub use system::{
     BoothAudioStats, BoothCpuStats, BoothDiskStats, BoothMemoryStats, BoothNetworkStats,

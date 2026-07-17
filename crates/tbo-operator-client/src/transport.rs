@@ -125,6 +125,47 @@ pub trait WriteTransport: HttpTransport {
     /// embedded in the URL is the only credential. A non-2xx response maps to an
     /// error. Used to download message/question audio for playback.
     fn get_bytes(&self, url: &str) -> impl Future<Output = Result<Vec<u8>>> + Send;
+
+    /// Issue a bearer-authenticated `GET` to `path` (relative to the base URL)
+    /// and return the raw response bytes.
+    ///
+    /// Unlike [`get_bytes`](WriteTransport::get_bytes) the `path` **is** joined
+    /// to the operator base URL and the `bearer` token is sent. Used for binary
+    /// downloads from the API itself, such as the admin data export archive. A
+    /// non-2xx response maps to an error.
+    fn get_bytes_auth(
+        &self,
+        path: &str,
+        bearer: Option<&str>,
+    ) -> impl Future<Output = Result<Vec<u8>>> + Send {
+        let _ = (path, bearer);
+        async {
+            Err(OperatorError::Transport(
+                "get_bytes_auth is not supported by this transport".to_owned(),
+            ))
+        }
+    }
+
+    /// Issue a bearer-authenticated `POST` of raw `body` bytes to `path`
+    /// (relative to the base URL) with an explicit `content_type`.
+    ///
+    /// The `path` **is** joined to the operator base URL and the `bearer` token
+    /// is sent. Used to upload the admin data import archive. Returns the text
+    /// response for JSON decoding by the caller.
+    fn post_bytes(
+        &self,
+        path: &str,
+        content_type: &str,
+        bearer: Option<&str>,
+        body: Vec<u8>,
+    ) -> impl Future<Output = Result<HttpResponse>> + Send {
+        let _ = (path, content_type, bearer, body);
+        async {
+            Err(OperatorError::Transport(
+                "post_bytes is not supported by this transport".to_owned(),
+            ))
+        }
+    }
 }
 
 /// A [`reqwest`]-backed transport using rustls.
@@ -298,6 +339,51 @@ impl WriteTransport for ReqwestTransport {
             .await
             .map(|bytes| bytes.to_vec())
             .map_err(|err| OperatorError::Transport(err.to_string()))
+    }
+
+    async fn get_bytes_auth(&self, path: &str, bearer: Option<&str>) -> Result<Vec<u8>> {
+        let url = format!("{}{path}", self.base_url.trim_end_matches('/'));
+        let mut request = self.client.get(url);
+        if let Some(token) = bearer {
+            request = request.bearer_auth(token);
+        }
+        let response = request
+            .send()
+            .await
+            .map_err(|err| OperatorError::Transport(err.to_string()))?;
+        let status = response.status().as_u16();
+        if !(200..300).contains(&status) {
+            let body = response.text().await.unwrap_or_default();
+            return Err(match status {
+                401 | 403 => OperatorError::Unauthorized(status),
+                404 => OperatorError::NotFound,
+                _ => OperatorError::Http { status, body },
+            });
+        }
+        response
+            .bytes()
+            .await
+            .map(|bytes| bytes.to_vec())
+            .map_err(|err| OperatorError::Transport(err.to_string()))
+    }
+
+    async fn post_bytes(
+        &self,
+        path: &str,
+        content_type: &str,
+        bearer: Option<&str>,
+        body: Vec<u8>,
+    ) -> Result<HttpResponse> {
+        let url = format!("{}{path}", self.base_url.trim_end_matches('/'));
+        let mut request = self
+            .client
+            .post(url)
+            .header(reqwest::header::CONTENT_TYPE, content_type)
+            .body(body);
+        if let Some(token) = bearer {
+            request = request.bearer_auth(token);
+        }
+        send_text(request).await
     }
 }
 

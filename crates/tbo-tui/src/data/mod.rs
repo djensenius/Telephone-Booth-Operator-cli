@@ -11,6 +11,7 @@
 
 mod debug;
 mod events;
+mod identity;
 mod messages;
 mod playback;
 mod questions;
@@ -26,11 +27,16 @@ use std::time::Instant;
 
 use time::OffsetDateTime;
 
-use tbo_auth::{ReqwestTransport as AuthTransport, SessionManager, TokenStore};
+use tbo_auth::{
+    InMemoryTokenStore, KeyringTokenStore, ReqwestTransport as AuthTransport, SessionManager,
+    TokenStore,
+};
+use tbo_core::config::Config;
 use tbo_operator_client::{OperatorClient, OperatorError, ReqwestTransport, Result, TokenProvider};
 
 pub use debug::DebugController;
 pub use events::EventsController;
+pub use identity::IdentityController;
 pub use messages::MessagesController;
 pub use playback::PlaybackController;
 pub use questions::QuestionsController;
@@ -43,6 +49,47 @@ pub use tokens::TokensController;
 
 /// The session manager shared between the auth controller and the data layer.
 pub type SharedSession = Arc<SessionManager<Box<dyn TokenStore>, AuthTransport>>;
+
+/// Build the shared session manager, preferring the OS keychain and falling
+/// back to an ephemeral in-memory store when secure storage is unavailable
+/// (e.g. a headless host with no secret service, or a locked keychain).
+///
+/// Returns the session plus an optional warning describing why the in-memory
+/// fallback was used, so callers (the TUI or a headless command) can surface it
+/// however suits them.
+///
+/// # Errors
+/// Returns an error only when even the in-memory session manager cannot be
+/// constructed from the configured auth settings.
+pub fn build_shared_session(config: &Config) -> Result<(SharedSession, Option<String>)> {
+    match keyring_session(config) {
+        Ok(session) => Ok((session, None)),
+        Err(err) => {
+            let warning =
+                format!("Secure storage unavailable ({err}); using an in-memory session this run.");
+            let store: Box<dyn TokenStore> = Box::new(InMemoryTokenStore::new());
+            let manager = SessionManager::new(&config.auth, store)
+                .map_err(|err| OperatorError::Transport(err.to_string()))?;
+            Ok((Arc::new(manager), Some(warning)))
+        }
+    }
+}
+
+/// Build a keychain-backed session manager, surfacing any keychain construction
+/// or initial-load error so the in-memory fallback can engage.
+fn keyring_session(config: &Config) -> Result<SharedSession> {
+    let store: Box<dyn TokenStore> = Box::new(
+        KeyringTokenStore::new().map_err(|err| OperatorError::Transport(err.to_string()))?,
+    );
+    let manager = SessionManager::new(&config.auth, store)
+        .map_err(|err| OperatorError::Transport(err.to_string()))?;
+    // Probe the store now so a keychain read failure triggers the fallback
+    // rather than surfacing later on first use.
+    manager
+        .current_session()
+        .map_err(|err| OperatorError::Transport(err.to_string()))?;
+    Ok(Arc::new(manager))
+}
 
 /// The concrete operator client the TUI uses for all read endpoints.
 pub type OperatorApi = OperatorClient<ReqwestTransport, SessionTokenProvider>;

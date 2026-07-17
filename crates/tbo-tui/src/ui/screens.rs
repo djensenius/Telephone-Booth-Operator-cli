@@ -1586,6 +1586,7 @@ fn stats_window_label(window: StatsWindow) -> &'static str {
         StatsWindow::Week => "Last 7 days",
         StatsWindow::Month => "Last 30 days",
         StatsWindow::All => "All time",
+        StatsWindow::Custom => "Custom range",
     }
 }
 

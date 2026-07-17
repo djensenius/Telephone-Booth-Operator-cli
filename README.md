@@ -58,7 +58,7 @@ The console talks to two backends:
 
 ## Building
 
-Requires Rust **1.95.0** (pinned via `rust-toolchain.toml`).
+Requires Rust **1.96.0** (pinned via `rust-toolchain.toml`).
 
 On Linux the audio backend needs ALSA development headers:
 
@@ -80,6 +80,10 @@ tb-operator                 # launch the console with the default config
 tb-operator --config FILE   # use an alternate TOML config file
 tb-operator --setup         # re-run the interactive setup flow
 tb-operator --version       # print the version and exit
+
+# Admin-only, non-interactive data backup (see below):
+tb-operator data export --output backup.tar   # download a full archive
+tb-operator data import --input backup.tar    # restore a full archive
 ```
 
 ### First-run setup
@@ -137,6 +141,39 @@ during setup or with the `nerd-fonts` config key.
 
 The Debian package also installs a `man tb-operator` page and shell completions
 for bash, zsh, and fish.
+
+### Operator roles (admin vs. read-only)
+
+Operator accounts come in two tiers, derived live from Authentik group
+membership by the operator API and reported on `GET /v1/auth/me`:
+
+- **Administrators** can manage questions (activate, deactivate, archive, and
+  create) and run the data export/import commands below.
+- **Regular operators** get a read-only Questions screen; the management keys
+  (`a`/`e`/`d`/`n`) surface a short "requires an administrator account" hint
+  instead of acting.
+
+`tb-operator` re-validates the signed-in identity about once a minute. If the
+account has been deleted or removed from the operator group in Authentik, the
+next check signs you out automatically rather than trusting the cached token, so
+a revoked account cannot keep operating.
+
+### Admin data backup (export / import)
+
+Administrators can take a full backup of an instance — the database plus **all**
+audio (content-addressed by SHA-256) — and restore it, without launching the
+UI:
+
+```sh
+tb-operator data export --output telephone-booth-backup.tar
+tb-operator data import --input  telephone-booth-backup.tar
+```
+
+Both commands use your stored operator session token (log in once with the TUI
+if needed) and call the admin-only `/v1/admin/data` endpoints; a non-admin
+session is rejected by the server. `export` writes the raw `.tar` archive to the
+given path; `import` uploads it and prints a summary of the rows restored and
+how many audio blobs were uploaded versus skipped (already present).
 
 ## Authentication
 

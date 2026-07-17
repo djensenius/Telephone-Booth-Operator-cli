@@ -11,11 +11,11 @@ use futures::stream::{BoxStream, Stream, StreamExt};
 
 use tbo_core::domain::{
     ApiToken, ApiTokenCreated, ApiTokenUsageBucket, BoothEventList, BoothEventRecord, BoothStatus,
-    BoothSystemSnapshotList, CallSessionDetail, CallSessionList, CreateApiTokenRequest, Message,
-    MessageDecision, MessageDecisionKind, MessageList, MessageStatus, Moderation, OperatorMe,
-    Question, QuestionCreate, QuestionList, QuestionStatus, StatsOverview, StatsWindow,
-    StatusHistory, Transcription, TranscriptionList, TranslationSubmit, UploadSasKind,
-    UploadSasRequest, UploadSlot,
+    BoothSystemSnapshotList, CallSessionDetail, CallSessionList, CreateApiTokenRequest,
+    DataImportSummary, Message, MessageDecision, MessageDecisionKind, MessageList, MessageStatus,
+    MetricFilter, MetricFilterInput, Moderation, OperatorMe, Question, QuestionCreate,
+    QuestionList, QuestionStatus, StatsOverview, StatsWindow, StatusHistory, Transcription,
+    TranscriptionList, TranslationSubmit, UploadSasKind, UploadSasRequest, UploadSlot,
 };
 
 use crate::error::{OperatorError, Result};
@@ -234,9 +234,59 @@ impl<T: HttpTransport, A: TokenProvider> OperatorClient<T, A> {
     pub async fn stats_overview(&self, window: Option<StatsWindow>) -> Result<StatsOverview> {
         let mut query = Vec::new();
         if let Some(window) = window {
+            if window == StatsWindow::Custom {
+                return Err(OperatorError::InvalidRequest(
+                    "custom ranges must be requested via stats_overview_range with start/end"
+                        .to_owned(),
+                ));
+            }
             query.push(("window", window.as_query().to_owned()));
         }
         self.get_json("/v1/stats/overview", &query, true).await
+    }
+
+    /// Usage statistics overview for a custom time range
+    /// (`GET /v1/stats/overview` with `start`/`end`).
+    ///
+    /// `start` bounds the range below (omit for "from the beginning"). When
+    /// `end_now` is `true` the upper bound is the current instant (sent as the
+    /// literal `end=now`, so a saved range stays live); otherwise `end` bounds
+    /// it (omit both for "now"). The response's `window` is
+    /// [`StatsWindow::Custom`].
+    pub async fn stats_overview_range(
+        &self,
+        start: Option<OffsetDateTime>,
+        end: Option<OffsetDateTime>,
+        end_now: bool,
+    ) -> Result<StatsOverview> {
+        let mut query = Vec::new();
+        if let Some(start) = start {
+            let formatted = start
+                .format(&Rfc3339)
+                .map_err(|err| OperatorError::InvalidRequest(err.to_string()))?;
+            query.push(("start", formatted));
+        }
+        if end_now {
+            query.push(("end", "now".to_owned()));
+        } else if let Some(end) = end {
+            let formatted = end
+                .format(&Rfc3339)
+                .map_err(|err| OperatorError::InvalidRequest(err.to_string()))?;
+            query.push(("end", formatted));
+        }
+        self.get_json("/v1/stats/overview", &query, true).await
+    }
+
+    /// List the signed-in operator's saved metric filters
+    /// (`GET /v1/stats/filters`).
+    ///
+    /// Owner-scoped: only the caller's own filters are returned.
+    ///
+    /// # Errors
+    /// Returns [`OperatorError::Unauthenticated`] when signed out, or an
+    /// HTTP/transport error.
+    pub async fn metric_filters(&self) -> Result<Vec<MetricFilter>> {
+        self.get_json("/v1/stats/filters", &[], true).await
     }
 
     /// Latest live system snapshot for every known booth
@@ -614,6 +664,70 @@ impl<T: WriteTransport, A: TokenProvider> OperatorClient<T, A> {
         self.transport.get_bytes(url).await
     }
 
+    /// Download a full data-export archive (`GET /v1/admin/data/export`).
+    ///
+    /// Admin-only. Returns the raw `application/x-tar` bytes of the archive
+    /// (database dump plus all audio blobs). Callers typically write the bytes
+    /// straight to a file.
+    ///
+    /// # Errors
+    /// Returns [`OperatorError::Unauthenticated`] when signed out,
+    /// [`OperatorError::Unauthorized`] when the operator is not an admin, or an
+    /// HTTP/transport error.
+    pub async fn export_data(&self) -> Result<Vec<u8>> {
+        let bearer = self.require_bearer().await?;
+        self.transport
+            .get_bytes_auth("/v1/admin/data/export", Some(&bearer))
+            .await
+    }
+
+    /// Save a new named metric filter (`POST /v1/stats/filters`).
+    ///
+    /// The `input` must resolve to a usable selection: either a preset window
+    /// or a custom `start`/`end` range. Returns the created [`MetricFilter`].
+    ///
+    /// # Errors
+    /// Returns [`OperatorError::Unauthenticated`] when signed out, or an
+    /// HTTP/transport error (the server replies `400` for an empty selection).
+    pub async fn create_metric_filter(&self, input: &MetricFilterInput) -> Result<MetricFilter> {
+        self.post_json("/v1/stats/filters", input).await
+    }
+
+    /// Delete a saved metric filter (`DELETE /v1/stats/filters/{id}`).
+    ///
+    /// # Errors
+    /// Returns [`OperatorError::Unauthenticated`] when signed out,
+    /// [`OperatorError::NotFound`] for an unknown id, or an HTTP/transport
+    /// error.
+    pub async fn delete_metric_filter(&self, id: &str) -> Result<()> {
+        self.delete_no_content(&format!("/v1/stats/filters/{id}"))
+            .await
+    }
+
+    /// Restore a previously exported archive (`POST /v1/admin/data/import`).
+    ///
+    /// Admin-only. Sends the raw `application/x-tar` `archive` bytes and decodes
+    /// the [`DataImportSummary`] describing what was restored.
+    ///
+    /// # Errors
+    /// Returns [`OperatorError::Unauthenticated`] when signed out,
+    /// [`OperatorError::Unauthorized`] when the operator is not an admin, or an
+    /// HTTP/transport error (the server replies `400` for an empty or invalid
+    /// archive).
+    pub async fn import_data(&self, archive: Vec<u8>) -> Result<DataImportSummary> {
+        let bearer = self.require_bearer().await?;
+        let response = self
+            .transport
+            .post_bytes(
+                "/v1/admin/data/import",
+                TAR_CONTENT_TYPE,
+                Some(&bearer),
+                archive,
+            )
+            .await?;
+        decode_success(response)
+    }
+
     /// Resolve the bearer token, failing fast when signed out.
     async fn require_bearer(&self) -> Result<String> {
         self.auth
@@ -668,6 +782,9 @@ fn decode_success<R: DeserializeOwned>(response: HttpResponse) -> Result<R> {
 
 /// The fixed content type for booth audio uploads.
 const FLAC_CONTENT_TYPE: &str = "audio/flac";
+
+/// The content type the admin data import endpoint expects.
+const TAR_CONTENT_TYPE: &str = "application/x-tar";
 
 /// Lower-case hex SHA-256 of `bytes`, as the upload SAS endpoint expects.
 fn sha256_hex(bytes: &[u8]) -> String {
@@ -851,6 +968,34 @@ mod tests {
                 Err(status_error(response))
             }
         }
+
+        async fn get_bytes_auth(&self, path: &str, bearer: Option<&str>) -> Result<Vec<u8>> {
+            let response = self.record("GET_BYTES_AUTH", path, &[], bearer, None)?;
+            if response.is_success() {
+                Ok(response.body.into_bytes())
+            } else {
+                Err(status_error(response))
+            }
+        }
+
+        async fn post_bytes(
+            &self,
+            path: &str,
+            content_type: &str,
+            bearer: Option<&str>,
+            body: Vec<u8>,
+        ) -> Result<HttpResponse> {
+            // Record the content type as a query pair and the byte length as the
+            // body so assertions can inspect the upload without depending on the
+            // (binary) payload.
+            self.record(
+                "POST_BYTES",
+                path,
+                &[("content-type", content_type.to_owned())],
+                bearer,
+                Some(&body.len().to_string()),
+            )
+        }
     }
 
     fn ok(body: &str) -> HttpResponse {
@@ -971,6 +1116,129 @@ mod tests {
         let calls = transport.calls();
         assert_eq!(calls[0].path, "/v1/stats/overview");
         assert_eq!(calls[0].query, vec![("window".to_owned(), "7d".to_owned())]);
+        assert_eq!(calls[0].bearer.as_deref(), Some("token-123"));
+    }
+
+    #[tokio::test]
+    async fn stats_overview_rejects_custom_window() {
+        let transport = FakeTransport::with_responses(vec![]);
+        let client = authed(transport.clone());
+
+        let err = client
+            .stats_overview(Some(StatsWindow::Custom))
+            .await
+            .unwrap_err();
+
+        assert!(matches!(err, OperatorError::InvalidRequest(_)));
+        // The unsupported request must never reach the network.
+        assert!(transport.calls().is_empty());
+    }
+
+    #[tokio::test]
+    async fn stats_overview_range_sends_start_and_end_now() {
+        let body = r#"{"window":"custom","rangeStart":"2025-12-01T00:00:00Z","rangeEnd":"2026-01-01T00:00:00Z","generatedAt":"2026-01-01T00:00:00Z","timezone":"UTC","calls":{"total":0,"completed":0,"inProgress":0,"outcomes":{},"perDay":[]},"messages":{"total":0,"byStatus":{}},"playback":{"totalPlaybacks":0},"pickupsHangups":{"pickups":0,"hangups":0,"digitsDialed":{}},"uploads":{"succeeded":0,"failed":0},"topQuestions":[],"hourly":[],"busiest":{},"boothBreakdown":[]}"#;
+        let transport = FakeTransport::with_responses(vec![ok(body)]);
+        let client = authed(transport.clone());
+
+        let start = OffsetDateTime::parse("2025-12-01T00:00:00Z", &Rfc3339).unwrap();
+        let overview = client
+            .stats_overview_range(Some(start), None, true)
+            .await
+            .unwrap();
+
+        assert_eq!(overview.window, StatsWindow::Custom);
+        let calls = transport.calls();
+        assert_eq!(calls[0].path, "/v1/stats/overview");
+        assert_eq!(
+            calls[0].query,
+            vec![
+                ("start".to_owned(), "2025-12-01T00:00:00Z".to_owned()),
+                ("end".to_owned(), "now".to_owned()),
+            ]
+        );
+        assert_eq!(calls[0].bearer.as_deref(), Some("token-123"));
+    }
+
+    #[tokio::test]
+    async fn metric_filters_crud_hit_expected_endpoints() {
+        let list_body = r#"[{"id":"f1","name":"Last week","window":"7d","start":null,"end":null,"createdAt":"2026-01-01T00:00:00Z","updatedAt":"2026-01-01T00:00:00Z"}]"#;
+        let created_body = r#"{"id":"f2","name":"December","window":null,"start":"2025-12-01T00:00:00Z","end":null,"createdAt":"2026-01-01T00:00:00Z","updatedAt":"2026-01-01T00:00:00Z"}"#;
+        let transport = FakeTransport::with_responses(vec![
+            ok(list_body),
+            ok(created_body),
+            HttpResponse {
+                status: 204,
+                body: String::new(),
+            },
+        ]);
+        let client = authed(transport.clone());
+
+        let filters = client.metric_filters().await.unwrap();
+        assert_eq!(filters.len(), 1);
+        assert_eq!(filters[0].window, Some(StatsWindow::Week));
+
+        let start = OffsetDateTime::parse("2025-12-01T00:00:00Z", &Rfc3339).unwrap();
+        let created = client
+            .create_metric_filter(&MetricFilterInput {
+                name: "December".to_owned(),
+                window: None,
+                start: Some(start),
+                end: None,
+            })
+            .await
+            .unwrap();
+        assert_eq!(created.id, "f2");
+
+        client.delete_metric_filter("f2").await.unwrap();
+
+        let calls = transport.calls();
+        assert_eq!(calls[0].method, "GET");
+        assert_eq!(calls[0].path, "/v1/stats/filters");
+        assert_eq!(calls[1].method, "POST");
+        assert_eq!(calls[1].path, "/v1/stats/filters");
+        let posted = calls[1].body.as_deref().unwrap();
+        assert!(posted.contains("\"start\":\"2025-12-01T00:00:00Z\""));
+        assert!(
+            !posted.contains("window"),
+            "preset omitted for custom range"
+        );
+        assert!(!posted.contains("\"end\""), "nil end omitted");
+        assert_eq!(calls[2].method, "DELETE");
+        assert_eq!(calls[2].path, "/v1/stats/filters/f2");
+    }
+
+    #[tokio::test]
+    async fn export_data_downloads_bytes_with_bearer() {
+        let transport = FakeTransport::with_responses(vec![ok("tar-archive-bytes")]);
+        let client = authed(transport.clone());
+
+        let bytes = client.export_data().await.unwrap();
+
+        assert_eq!(bytes, b"tar-archive-bytes");
+        let calls = transport.calls();
+        assert_eq!(calls[0].method, "GET_BYTES_AUTH");
+        assert_eq!(calls[0].path, "/v1/admin/data/export");
+        assert_eq!(calls[0].bearer.as_deref(), Some("token-123"));
+    }
+
+    #[tokio::test]
+    async fn import_data_posts_tar_and_decodes_summary() {
+        let body = r#"{"rows":{"question":3,"message":10},"blobsUploaded":2,"blobsSkipped":1}"#;
+        let transport = FakeTransport::with_responses(vec![ok(body)]);
+        let client = authed(transport.clone());
+
+        let summary = client.import_data(b"archive".to_vec()).await.unwrap();
+
+        assert_eq!(summary.blobs_uploaded, 2);
+        assert_eq!(summary.blobs_skipped, 1);
+        assert_eq!(summary.rows.get("message"), Some(&10));
+        let calls = transport.calls();
+        assert_eq!(calls[0].method, "POST_BYTES");
+        assert_eq!(calls[0].path, "/v1/admin/data/import");
+        assert_eq!(
+            calls[0].query,
+            vec![("content-type".to_owned(), "application/x-tar".to_owned())]
+        );
         assert_eq!(calls[0].bearer.as_deref(), Some("token-123"));
     }
 

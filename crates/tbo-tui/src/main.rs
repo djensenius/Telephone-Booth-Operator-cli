@@ -18,6 +18,7 @@ mod app;
 mod auth;
 mod cli;
 mod data;
+mod datacmd;
 mod event;
 mod logging;
 mod onboarding;
@@ -32,7 +33,7 @@ use tbo_core::Secrets;
 use tbo_core::config::Config;
 
 use crate::app::App;
-use crate::cli::Cli;
+use crate::cli::{Cli, Command, DataCommand};
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -44,9 +45,10 @@ async fn main() -> Result<()> {
 
     // Run the interactive setup when explicitly requested, or on first launch
     // (no config yet) when attached to a terminal that can answer prompts.
+    // Non-interactive subcommands never trigger onboarding.
     let first_run = !config_path.exists();
     let is_interactive_terminal = std::io::stdin().is_terminal() && std::io::stdout().is_terminal();
-    if cli.setup || (first_run && is_interactive_terminal) {
+    if cli.command.is_none() && (cli.setup || (first_run && is_interactive_terminal)) {
         onboarding::run(&config_path).await?;
     }
 
@@ -54,6 +56,12 @@ async fn main() -> Result<()> {
     config.merge_secrets(&Secrets::load().unwrap_or_default());
 
     let _log_guard = logging::init();
+
+    // Non-interactive subcommands run to completion and exit without starting
+    // the terminal UI.
+    if let Some(command) = cli.command {
+        return run_command(command, &config).await;
+    }
 
     // Build the app (and its auth/session state) before taking over the
     // terminal, so a setup failure surfaces as a normal error.
@@ -63,4 +71,12 @@ async fn main() -> Result<()> {
     let result = app.run(&mut terminal).await;
     tui::restore()?;
     result
+}
+
+/// Dispatch a non-interactive subcommand.
+async fn run_command(command: Command, config: &Config) -> Result<()> {
+    match command {
+        Command::Data(DataCommand::Export { output }) => datacmd::export(config, &output).await,
+        Command::Data(DataCommand::Import { input }) => datacmd::import(config, &input).await,
+    }
 }

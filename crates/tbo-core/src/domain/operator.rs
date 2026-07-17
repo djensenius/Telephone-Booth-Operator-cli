@@ -14,6 +14,11 @@ pub struct OperatorMe {
     pub name: String,
     /// Group memberships.
     pub groups: Vec<String>,
+    /// Whether the operator is an administrator (may manage questions and
+    /// export/import data). Derived from Authentik group membership by the
+    /// operator API; defaults to `false` when omitted by an older server.
+    #[serde(default)]
+    pub is_admin: bool,
     /// Avatar URL, when available.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub picture: Option<String>,
