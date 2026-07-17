@@ -6,7 +6,7 @@ mobile operator apps and adds a `btm`-style system-health dashboard.
 
 ## Stack & layout
 
-- Rust workspace, edition 2024, toolchain **1.95.0** (`rust-toolchain.toml`).
+- Rust workspace, edition 2024, toolchain **1.96.0** (`rust-toolchain.toml`).
 - UI: `ratatui` + `crossterm`; async: `tokio`; HTTP: `reqwest` (rustls);
   WebSockets: `tokio-tungstenite`; audio: `rodio` + `symphonia`.
 - Crates: `tbo-core`, `tbo-auth`, `tbo-operator-client`, `tbo-booth-client`,

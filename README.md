@@ -58,7 +58,7 @@ The console talks to two backends:
 
 ## Building
 
-Requires Rust **1.95.0** (pinned via `rust-toolchain.toml`).
+Requires Rust **1.96.0** (pinned via `rust-toolchain.toml`).
 
 On Linux the audio backend needs ALSA development headers:
 
