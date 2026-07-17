@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.4.0](https://github.com/djensenius/Telephone-Booth-Operator-cli/compare/v0.3.0...v0.4.0) (2026-07-17)
+
+
+### Features
+
+* admin tier, data export/import, and advanced-metrics client ([#86](https://github.com/djensenius/Telephone-Booth-Operator-cli/issues/86)) ([f13c78c](https://github.com/djensenius/Telephone-Booth-Operator-cli/commit/f13c78c7123ffb9c9c968f63dd0f69c80b5c3ca3))
+* publish Linux Homebrew tarballs and multi-platform formula ([#83](https://github.com/djensenius/Telephone-Booth-Operator-cli/issues/83)) ([1da6f90](https://github.com/djensenius/Telephone-Booth-Operator-cli/commit/1da6f90ee43ce944a4d0bc4c9ee6bd80dd5ff042))
+* **tui:** gate API tokens and debug screens behind admin tier ([#87](https://github.com/djensenius/Telephone-Booth-Operator-cli/issues/87)) ([557c4cd](https://github.com/djensenius/Telephone-Booth-Operator-cli/commit/557c4cde14214307867d46a1892c01a6dc4157a0))
+
 ## [0.3.0](https://github.com/djensenius/Telephone-Booth-Operator-cli/compare/v0.2.3...v0.3.0) (2026-07-17)
 
 
