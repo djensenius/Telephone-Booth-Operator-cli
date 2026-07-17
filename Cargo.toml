@@ -104,6 +104,7 @@ rustls = { version = "0.23", default-features = false, features = ["ring", "std"
 # is supplied directly via tokio-rustls with the ring provider to match reqwest.
 tokio-tungstenite = { version = "0.26", default-features = false, features = ["handshake"] }
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "logging", "tls12"] }
+webpki-roots = "1"
 
 # Hashing for the audio-upload SAS flow (SHA-256 of the FLAC bytes)
 sha2 = "0.10"

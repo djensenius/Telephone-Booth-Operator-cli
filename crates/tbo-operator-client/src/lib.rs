@@ -1,10 +1,11 @@
 //! Operator API client for the `tb-operator` console.
 //!
 //! Wraps the Authentik-secured operator REST API, covering the read endpoints
-//! for status, messages, questions, events, and sessions, plus the
-//! bearer-authenticated server-sent events stream (`/v1/events/stream`) for a
-//! live event tail. Mutating actions cover message moderation (approve/reject,
-//! translation submit, re-transcribe/re-moderate, delete), question
+//! for status, messages, questions, events, and sessions, plus
+//! bearer-authenticated live streams: server-sent events (`/v1/events/stream`)
+//! for the event tail and WebSocket status updates (`/v1/ws/status`). Mutating
+//! actions cover message moderation (approve/reject, translation submit,
+//! re-transcribe/re-moderate, delete), question
 //! management (activate/deactivate/archive, plus create via the audio-upload
 //! SAS flow), and API-token management (list, create with a one-time plaintext
 //! secret, revoke, and per-token usage). The client is generic over an
@@ -17,6 +18,7 @@ mod error;
 mod sse;
 mod token;
 mod transport;
+mod ws;
 
 pub use client::{BoothEventStream, EventQuery, OperatorClient};
 pub use error::{OperatorError, Result};
@@ -25,3 +27,4 @@ pub use token::{StaticTokenProvider, TokenProvider};
 pub use transport::{
     ByteStream, HttpResponse, HttpTransport, ReqwestTransport, SseTransport, WriteTransport,
 };
+pub use ws::{StatusEnvelopeStream, status_ws_url};

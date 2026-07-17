@@ -24,6 +24,7 @@ use crate::token::{StaticTokenProvider, TokenProvider};
 use crate::transport::{
     HttpResponse, HttpTransport, ReqwestTransport, SseTransport, WriteTransport,
 };
+use crate::ws::{StatusEnvelopeStream, connect_status};
 
 /// Filter and pagination options for [`OperatorClient::events`] and the live
 /// event stream.
@@ -81,6 +82,31 @@ impl<T: HttpTransport, A: TokenProvider> OperatorClient<T, A> {
     /// still sent when available.
     pub async fn status(&self) -> Result<BoothStatus> {
         self.get_json("/v1/status", &[], false).await
+    }
+
+    /// Open the live status socket (`/v1/ws/status`).
+    ///
+    /// The current bearer token is sent on the WebSocket handshake as
+    /// `Authorization: Bearer <token>`. The returned stream yields decoded
+    /// [`tbo_core::domain::WsEnvelope`] frames and ends when the socket closes,
+    /// allowing callers to reconnect with their own backoff.
+    ///
+    /// # Errors
+    /// Returns [`OperatorError::Unauthenticated`] when signed out,
+    /// [`OperatorError::InvalidRequest`] when the transport does not expose a
+    /// base URL, or a transport error if the socket cannot be opened.
+    pub async fn status_stream(&self) -> Result<StatusEnvelopeStream> {
+        let bearer = self
+            .auth
+            .access_token()
+            .await?
+            .ok_or(OperatorError::Unauthenticated)?;
+        let base_url = self.transport.base_url().ok_or_else(|| {
+            OperatorError::InvalidRequest(
+                "transport does not expose a base URL for WebSocket connections".to_owned(),
+            )
+        })?;
+        connect_status(base_url, &bearer).await
     }
 
     /// Recent booth status snapshots for charts (`GET /v1/status/history`).

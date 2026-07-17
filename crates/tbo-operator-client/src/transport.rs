@@ -43,6 +43,15 @@ pub trait HttpTransport: Send + Sync {
         query: &[(&str, String)],
         bearer: Option<&str>,
     ) -> impl Future<Output = Result<HttpResponse>> + Send;
+
+    /// Return the configured API base URL when the transport exposes it.
+    ///
+    /// Long-lived transports such as WebSockets need the same root URL as REST
+    /// calls but do not go through [`HttpTransport::get`]. Test fakes may leave
+    /// this as `None`.
+    fn base_url(&self) -> Option<&str> {
+        None
+    }
 }
 
 /// A boxed stream of raw byte chunks from a server-sent events response.
@@ -165,6 +174,10 @@ impl HttpTransport for ReqwestTransport {
             request = request.bearer_auth(token);
         }
         send_text(request).await
+    }
+
+    fn base_url(&self) -> Option<&str> {
+        Some(&self.base_url)
     }
 }
 

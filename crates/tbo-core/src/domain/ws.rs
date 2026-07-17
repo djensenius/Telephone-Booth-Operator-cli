@@ -1,8 +1,8 @@
 //! Discriminated union pushed over the `/v1/ws/status` socket.
 //!
-//! The TUI cannot use that socket directly (it is cookie-authenticated
-//! server-side), but the envelope shape is also useful when decoding other
-//! status payloads, so it is modelled here for completeness.
+//! Native clients such as the TUI subscribe with bearer authentication; browser
+//! clients may also use the server-side cookie flow. The shared envelope shape
+//! lives in core so every client decodes the same payloads.
 
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
