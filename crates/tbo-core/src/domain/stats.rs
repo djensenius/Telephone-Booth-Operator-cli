@@ -19,10 +19,18 @@ pub enum StatsWindow {
     /// All time.
     #[serde(rename = "all")]
     All,
+    /// A caller-supplied custom `start`/`end` range. Returned by the API when
+    /// an overview is requested with explicit bounds rather than a preset.
+    #[serde(rename = "custom")]
+    Custom,
 }
 
 impl StatsWindow {
     /// The query-string value the API expects (`24h`, `7d`, `30d`, `all`).
+    ///
+    /// [`Self::Custom`] has no preset query value — custom ranges are requested
+    /// with `start`/`end` parameters instead — and maps to `"custom"` only for
+    /// display symmetry.
     #[must_use]
     pub const fn as_query(self) -> &'static str {
         match self {
@@ -30,6 +38,7 @@ impl StatsWindow {
             Self::Week => "7d",
             Self::Month => "30d",
             Self::All => "all",
+            Self::Custom => "custom",
         }
     }
 }
@@ -204,4 +213,62 @@ pub struct StatsOverview {
     pub last_activity_at: Option<OffsetDateTime>,
     /// Per-booth breakdown.
     pub booth_breakdown: Vec<StatsBoothBreakdown>,
+}
+
+/// A saved metric filter: a named time selection an operator can re-apply.
+///
+/// A filter is either a preset `window` or an explicit custom range. For custom
+/// ranges, a `None` `start` means "from the beginning" and a `None` `end` means
+/// "now" (always resolved to the current instant when the filter is applied).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MetricFilter {
+    /// Server-assigned identifier.
+    pub id: String,
+    /// Human-readable name chosen by the operator.
+    pub name: String,
+    /// Preset window, when the filter is preset-based.
+    #[serde(default)]
+    pub window: Option<StatsWindow>,
+    /// Inclusive range start, when the filter is a custom range.
+    #[serde(default, with = "time::serde::rfc3339::option")]
+    pub start: Option<OffsetDateTime>,
+    /// Inclusive range end, or `None` for "now".
+    #[serde(default, with = "time::serde::rfc3339::option")]
+    pub end: Option<OffsetDateTime>,
+    /// When the filter was created.
+    #[serde(with = "time::serde::rfc3339")]
+    pub created_at: OffsetDateTime,
+    /// When the filter was last updated.
+    #[serde(with = "time::serde::rfc3339")]
+    pub updated_at: OffsetDateTime,
+}
+
+/// Create payload for a saved metric filter (`POST /v1/stats/filters`).
+///
+/// Exactly one selection kind should be provided: either a preset `window`, or
+/// a custom range via `start`/`end`. Absent fields are omitted from the request
+/// body so the server sees only the selection that was set.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MetricFilterInput {
+    /// Name for the saved filter (1–80 characters after trimming).
+    pub name: String,
+    /// Preset window, when saving a preset-based filter.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub window: Option<StatsWindow>,
+    /// Inclusive range start, when saving a custom range.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "time::serde::rfc3339::option"
+    )]
+    pub start: Option<OffsetDateTime>,
+    /// Inclusive range end, when saving a custom range (`None` means "now").
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "time::serde::rfc3339::option"
+    )]
+    pub end: Option<OffsetDateTime>,
 }
