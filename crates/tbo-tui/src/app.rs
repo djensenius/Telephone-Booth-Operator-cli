@@ -359,13 +359,12 @@ impl App {
                         self.auth.sign_out(&mut self.toasts);
                         self.identity.reset();
                     }
-                    // If the operator's tier drops (e.g. revalidation returns
-                    // a non-admin) while an admin-only screen is focused, bounce
-                    // them back to Status so gated content never lingers.
-                    if self.screen.is_admin_only()
-                        && self.identity.is_known()
-                        && !self.identity.is_admin()
-                    {
+                    // If the operator no longer has affirmative admin access
+                    // while an admin-only screen is focused — whether their tier
+                    // dropped on revalidation or they signed out / became
+                    // unknown — bounce them back to Status so gated content
+                    // (cached token secrets, the debug surface) never lingers.
+                    if should_bounce_from_admin_screen(self.screen, self.identity.is_admin()) {
                         self.screen = Screen::Status;
                     }
                     self.status.tick(self.screen == Screen::Status);
@@ -1201,4 +1200,35 @@ impl App {
 /// Minimal URL guard for editable config fields.
 fn is_http_url(value: &str) -> bool {
     value.starts_with("http://") || value.starts_with("https://")
+}
+
+/// Whether an operator focused on `screen` must be bounced back to Status.
+///
+/// This is true for any admin-only screen unless the operator has affirmative
+/// admin authorization. `is_admin` is `false` both for confirmed non-admins and
+/// for the unknown/signed-out state, so gated screens are never left focused
+/// without a positive admin grant.
+fn should_bounce_from_admin_screen(screen: Screen, is_admin: bool) -> bool {
+    screen.is_admin_only() && !is_admin
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Screen, should_bounce_from_admin_screen};
+
+    #[test]
+    fn admin_screens_bounce_without_affirmative_admin() {
+        // Non-admin (or unknown/signed-out, both surface as `is_admin = false`)
+        // must be bounced off every admin-only screen.
+        for screen in [Screen::Tokens, Screen::Debug] {
+            assert!(should_bounce_from_admin_screen(screen, false));
+            assert!(!should_bounce_from_admin_screen(screen, true));
+        }
+    }
+
+    #[test]
+    fn non_admin_screens_never_bounce() {
+        assert!(!should_bounce_from_admin_screen(Screen::Status, false));
+        assert!(!should_bounce_from_admin_screen(Screen::Status, true));
+    }
 }
