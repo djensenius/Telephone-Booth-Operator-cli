@@ -137,6 +137,20 @@ impl Screen {
         }
     }
 
+    /// Number of top-level screens.
+    #[must_use]
+    pub const fn count() -> usize {
+        ALL.len()
+    }
+
+    /// Whether this screen is restricted to administrator operators. Mirrors
+    /// the operator web console, where API tokens and the booth debug tools
+    /// are admin-only.
+    #[must_use]
+    pub const fn is_admin_only(self) -> bool {
+        matches!(self, Screen::Tokens | Screen::Debug)
+    }
+
     /// The next screen, wrapping around.
     #[must_use]
     pub fn next(self) -> Screen {
@@ -3188,6 +3202,19 @@ mod tests {
         }
         assert_eq!(Screen::from_nav_key('S'), Some(Screen::Settings));
         assert_eq!(Screen::from_nav_key('x'), None);
+    }
+
+    #[test]
+    fn only_tokens_and_debug_are_admin_only() {
+        for screen in Screen::all() {
+            let expected = matches!(screen, Screen::Tokens | Screen::Debug);
+            assert_eq!(screen.is_admin_only(), expected, "{screen:?}");
+        }
+    }
+
+    #[test]
+    fn count_matches_all_screens() {
+        assert_eq!(Screen::count(), Screen::all().len());
     }
 
     #[test]

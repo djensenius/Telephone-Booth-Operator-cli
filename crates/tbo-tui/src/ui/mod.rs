@@ -48,9 +48,11 @@ fn render_header(app: &App, frame: &mut Frame, area: Rect) {
     let theme = app.theme();
     let icons = app.icons();
     let screen = app.screen();
+    let prev = app.prev_screen();
+    let next = app.next_screen();
     let line = Line::from(vec![
         Span::styled(
-            format!("{} {} ", screen.prev().nav_key(), screen.prev().short()),
+            format!("{} {} ", prev.nav_key(), prev.short()),
             Style::new().fg(theme.dim),
         ),
         Span::styled("‹ ", Style::new().fg(theme.dim)),
@@ -66,7 +68,7 @@ fn render_header(app: &App, frame: &mut Frame, area: Rect) {
         Span::styled(" ", Style::new().fg(theme.dim)),
         Span::styled("› ", Style::new().fg(theme.dim)),
         Span::styled(
-            format!("{} {}", screen.next().nav_key(), screen.next().short()),
+            format!("{} {}", next.nav_key(), next.short()),
             Style::new().fg(theme.dim),
         ),
         Span::styled("  ? screens", Style::new().fg(theme.dim)),
@@ -278,6 +280,7 @@ fn render_help(app: &App, frame: &mut Frame, area: Rect) {
             Screen::Stats,
         ],
         app.screen(),
+        app.is_admin(),
     );
     push_screen_group(
         &mut lines,
@@ -286,6 +289,7 @@ fn render_help(app: &App, frame: &mut Frame, area: Rect) {
         "System",
         &[Screen::LiveSystem, Screen::SystemHealth, Screen::Debug],
         app.screen(),
+        app.is_admin(),
     );
     push_screen_group(
         &mut lines,
@@ -294,6 +298,7 @@ fn render_help(app: &App, frame: &mut Frame, area: Rect) {
         "Admin",
         &[Screen::Tokens, Screen::Settings, Screen::About],
         app.screen(),
+        app.is_admin(),
     );
     lines.push(Line::raw(""));
     lines.push(Line::from(Span::styled(
@@ -340,25 +345,38 @@ fn push_screen_group(
     title: &'static str,
     screens: &[Screen],
     current: Screen,
+    is_admin: bool,
 ) {
     lines.push(Line::from(Span::styled(
         format!("  {title}"),
         Style::new().fg(theme.dim).add_modifier(Modifier::BOLD),
     )));
     for screen in screens {
+        let locked = screen.is_admin_only() && !is_admin;
         let marker = if *screen == current { "›" } else { " " };
-        let style = if *screen == current {
+        let style = if locked {
+            Style::new()
+                .fg(theme.dim)
+                .add_modifier(Modifier::DIM | Modifier::ITALIC)
+        } else if *screen == current {
             Style::new().fg(theme.accent).add_modifier(Modifier::BOLD)
         } else {
             Style::new().fg(theme.fg)
         };
+        let key_style = if locked {
+            Style::new().fg(theme.dim)
+        } else {
+            Style::new().fg(theme.accent).add_modifier(Modifier::BOLD)
+        };
+        let label = if locked {
+            format!("{}{} (admin)", icons.tab(*screen), screen.title())
+        } else {
+            format!("{}{}", icons.tab(*screen), screen.title())
+        };
         lines.push(Line::from(vec![
             Span::styled(format!("  {marker} "), Style::new().fg(theme.accent)),
-            Span::styled(
-                format!("{:<2}", screen.nav_key()),
-                Style::new().fg(theme.accent).add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(format!("{}{}", icons.tab(*screen), screen.title()), style),
+            Span::styled(format!("{:<2}", screen.nav_key()), key_style),
+            Span::styled(label, style),
         ]));
     }
 }
