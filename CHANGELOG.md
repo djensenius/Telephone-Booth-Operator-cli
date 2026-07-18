@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.4.1](https://github.com/djensenius/Telephone-Booth-Operator-cli/compare/v0.4.0...v0.4.1) (2026-07-18)
+
+
+### Bug Fixes
+
+* bump ratatui to 0.30 to drop unsound lru and unmaintained paste ([#90](https://github.com/djensenius/Telephone-Booth-Operator-cli/issues/90)) ([0607b33](https://github.com/djensenius/Telephone-Booth-Operator-cli/commit/0607b337733ae152061641825d9eafa259226294))
+* uppercase screen nav keys and gate UI behind login ([#88](https://github.com/djensenius/Telephone-Booth-Operator-cli/issues/88)) ([c752af3](https://github.com/djensenius/Telephone-Booth-Operator-cli/commit/c752af31f75a3652987fe7d66553a875cc80bb58))
+
 ## [0.4.0](https://github.com/djensenius/Telephone-Booth-Operator-cli/compare/v0.3.0...v0.4.0) (2026-07-17)
 
 
