@@ -23,10 +23,6 @@ allow = [
 confidence-threshold = 0.93
 
 [advisories]
-# `paste` (RUSTSEC-2024-0436) is flagged as unmaintained. It is a proc-macro
-# build-time dependency of `ratatui` with no available replacement, and the
-# advisory is a maintenance notice rather than a security vulnerability.
-ignore = ["RUSTSEC-2024-0436"]
 yanked = "warn"
 
 [bans]
