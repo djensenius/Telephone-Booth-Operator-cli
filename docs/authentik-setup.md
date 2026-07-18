@@ -214,9 +214,10 @@ requires the token to:
 cargo run -p tbo-tui        # or the installed `tb-operator`
 ```
 
-Open the **Settings** screen, press **`L`**, then enter the displayed code at
-the verification URL on any device. Press **`O`** to sign out (clears the
-keychain entry, service `io.telephonebooth.tb-operator`, account
+On launch the app shows a **Sign in** gate. Press **`L`**, then enter the
+displayed code at the verification URL on any device. Once signed in, press
+**`O`** from the Settings screen (or in the `?` screen palette) to sign out
+(clears the keychain entry, service `io.telephonebooth.tb-operator`, account
 `oidc-session`).
 
 ## Verify and troubleshoot
