@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.0](https://github.com/djensenius/Telephone-Booth-Operator-cli/compare/v0.4.1...v0.5.0) (2026-07-19)
+
+
+### Features
+
+* label moderation as advisory AI suggestion, human decides ([#92](https://github.com/djensenius/Telephone-Booth-Operator-cli/issues/92)) ([acc6ee5](https://github.com/djensenius/Telephone-Booth-Operator-cli/commit/acc6ee5ab9d3991b2100e2decb6e59ad2bd9187b))
+
 ## [0.4.1](https://github.com/djensenius/Telephone-Booth-Operator-cli/compare/v0.4.0...v0.4.1) (2026-07-18)
 
 
