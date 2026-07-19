@@ -424,7 +424,7 @@ fn message_detail_lines(theme: &Theme, message: Option<&Message>) -> Vec<Line<'s
     push_transcription_lines(&mut lines, theme, message.latest_transcription.as_ref());
 
     lines.push(Line::raw(""));
-    lines.push(subheader(theme, "Moderation"));
+    lines.push(subheader(theme, "Moderation (AI suggestion)"));
     push_moderation_lines(&mut lines, theme, message.latest_moderation.as_ref());
 
     lines
