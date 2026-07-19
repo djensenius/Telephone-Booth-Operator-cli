@@ -28,15 +28,16 @@ pub enum TranscriptionStatus {
     Failed,
 }
 
-/// Moderation recommendation for a message.
+/// Moderation recommendation for a message. Advisory only: a human operator
+/// always makes the final approve/reject decision.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ModerationRecommendation {
-    /// Safe to auto-approve.
+    /// Suggests the message looks safe to approve.
     Approve,
-    /// Needs human review.
+    /// Suggests the message needs closer human review.
     Review,
-    /// Should be rejected.
+    /// Suggests the message should be rejected.
     Reject,
 }
 
