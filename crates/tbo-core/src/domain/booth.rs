@@ -25,6 +25,8 @@ pub enum BoothState {
     PlayingMessage,
     /// Playing operator/system instructions.
     PlayingInstructions,
+    /// Playing the "call cannot be completed" prompt (dials 3-9).
+    CallUnavailable,
     /// Error state.
     Error,
 }
