@@ -3012,6 +3012,7 @@ fn state_label(state: BoothState) -> &'static str {
         BoothState::Uploading => "Uploading",
         BoothState::PlayingMessage => "Playing message",
         BoothState::PlayingInstructions => "Playing instructions",
+        BoothState::CallUnavailable => "Call unavailable",
         BoothState::Error => "Error",
     }
 }

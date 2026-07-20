@@ -285,6 +285,7 @@ mod tests {
                 BoothState::Uploading => "uploading",
                 BoothState::PlayingMessage => "playingMessage",
                 BoothState::PlayingInstructions => "playingInstructions",
+                BoothState::CallUnavailable => "callUnavailable",
                 BoothState::Error => "error",
             }
         ))

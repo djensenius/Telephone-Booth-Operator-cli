@@ -32,6 +32,20 @@ fn booth_status_decodes_camel_case_enum() {
 }
 
 #[test]
+fn booth_status_decodes_call_unavailable() {
+    let json = r#"{
+        "state": "callUnavailable",
+        "updatedAt": "2024-06-01T12:00:00Z"
+    }"#;
+    let status: BoothStatus = serde_json::from_str(json).unwrap();
+    assert_eq!(status.state, BoothState::CallUnavailable);
+
+    // Re-serialize and ensure the new variant keeps its camelCase wire form.
+    let round = serde_json::to_string(&status).unwrap();
+    assert!(round.contains("\"callUnavailable\""));
+}
+
+#[test]
 fn message_with_nested_ai_decodes() {
     let json = r#"{
         "id": "22222222-2222-2222-2222-222222222222",
