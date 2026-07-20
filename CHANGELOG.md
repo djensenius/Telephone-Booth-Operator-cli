@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.1](https://github.com/djensenius/Telephone-Booth-Operator-cli/compare/v0.5.0...v0.5.1) (2026-07-20)
+
+
+### Bug Fixes
+
+* add callUnavailable booth state ([#94](https://github.com/djensenius/Telephone-Booth-Operator-cli/issues/94)) ([23169f8](https://github.com/djensenius/Telephone-Booth-Operator-cli/commit/23169f8ceb8179fe63c37ca38db805a71d2148b0))
+
 ## [0.5.0](https://github.com/djensenius/Telephone-Booth-Operator-cli/compare/v0.4.1...v0.5.0) (2026-07-19)
 
 
