@@ -267,7 +267,7 @@ mod tests {
     fn controller(status: u16, body: &str) -> StatusController<FakeTransport, StaticTokenProvider> {
         let client = OperatorClient::with_transport(
             FakeTransport::new(status, body),
-            StaticTokenProvider::anonymous(),
+            StaticTokenProvider::new("test-token"),
         );
         StatusController::new(client)
     }
