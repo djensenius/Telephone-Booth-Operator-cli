@@ -3180,10 +3180,74 @@ fn format_expiry(expires_at: Option<OffsetDateTime>) -> String {
 mod tests {
     use super::{
         Screen, Theme, event_detail_lines, event_type_color, format_bytes, format_millis_f64,
-        format_uptime, percent, percent_bar, push_payload_lines, ratio_block, ratio_of,
-        short_fingerprint, sparkline,
+        format_uptime, percent, percent_bar, push_payload_lines, push_status_detail, ratio_block,
+        ratio_of, short_fingerprint, sparkline,
     };
     use tbo_core::domain::BoothEventType;
+    use tbo_core::domain::{BoothState, BoothStatus};
+    use time::{Duration, OffsetDateTime};
+
+    fn status_detail_text(status: &BoothStatus) -> String {
+        let mut lines = Vec::new();
+        push_status_detail(&mut lines, &Theme::default(), status);
+        lines
+            .iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    fn idle_status() -> BoothStatus {
+        BoothStatus {
+            state: BoothState::Idle,
+            updated_at: OffsetDateTime::UNIX_EPOCH + Duration::minutes(10),
+            current_question_id: None,
+            current_message_id: None,
+            last_error: None,
+            runtime_mode: None,
+            first_seen_at: None,
+            repeat_count: None,
+        }
+    }
+
+    #[test]
+    fn status_detail_shows_collapse_window() {
+        let text = status_detail_text(&BoothStatus {
+            first_seen_at: Some(OffsetDateTime::UNIX_EPOCH),
+            repeat_count: Some(142),
+            ..idle_status()
+        });
+
+        assert!(text.contains("Since:"), "{text}");
+        assert!(text.contains("Reports:      142"), "{text}");
+    }
+
+    #[test]
+    fn status_detail_omits_collapse_window_without_metadata() {
+        let text = status_detail_text(&idle_status());
+
+        assert!(text.contains("Updated:"), "{text}");
+        assert!(!text.contains("Since:"), "{text}");
+        assert!(!text.contains("Reports:"), "{text}");
+    }
+
+    #[test]
+    fn status_detail_omits_collapse_window_for_a_single_report() {
+        let updated_at = OffsetDateTime::UNIX_EPOCH + Duration::minutes(10);
+        let text = status_detail_text(&BoothStatus {
+            first_seen_at: Some(updated_at),
+            repeat_count: Some(1),
+            ..idle_status()
+        });
+
+        assert!(!text.contains("Since:"), "{text}");
+        assert!(!text.contains("Reports:"), "{text}");
+    }
 
     #[test]
     fn index_round_trips_for_every_screen() {
