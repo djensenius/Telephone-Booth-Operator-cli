@@ -39,6 +39,7 @@ async fn status_decodes_over_real_transport() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/v1/status"))
+        .and(header("authorization", format!("Bearer {TOKEN}").as_str()))
         .respond_with(
             ResponseTemplate::new(200)
                 .set_body_string(r#"{"state":"idle","updatedAt":"2026-01-01T00:00:00Z"}"#),

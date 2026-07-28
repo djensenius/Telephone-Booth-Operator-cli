@@ -78,10 +78,10 @@ impl<T: HttpTransport, A: TokenProvider> OperatorClient<T, A> {
         Self { transport, auth }
     }
 
-    /// Current booth status (`GET /v1/status`). Public endpoint; the bearer is
-    /// still sent when available.
+    /// Current booth status (`GET /v1/status`). Requires an operator session,
+    /// an operator bearer, or a phone API token; this client sends the bearer.
     pub async fn status(&self) -> Result<BoothStatus> {
-        self.get_json("/v1/status", &[], false).await
+        self.get_json("/v1/status", &[], true).await
     }
 
     /// Open the live status socket (`/v1/ws/status`).
@@ -1010,12 +1010,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn status_hits_public_endpoint_and_decodes() {
+    async fn status_sends_bearer_and_decodes() {
         let transport = FakeTransport::with_responses(vec![ok(
             r#"{"state":"idle","updatedAt":"2026-01-01T00:00:00Z"}"#,
         )]);
-        let client =
-            OperatorClient::with_transport(transport.clone(), StaticTokenProvider::anonymous());
+        let client = authed(transport.clone());
 
         let status = client.status().await.unwrap();
 
@@ -1024,7 +1023,19 @@ mod tests {
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].path, "/v1/status");
         assert!(calls[0].query.is_empty());
-        assert!(calls[0].bearer.is_none());
+        assert_eq!(calls[0].bearer.as_deref(), Some("token-123"));
+    }
+
+    #[tokio::test]
+    async fn status_requires_authentication() {
+        let transport = FakeTransport::with_responses(vec![]);
+        let client =
+            OperatorClient::with_transport(transport.clone(), StaticTokenProvider::anonymous());
+
+        let err = client.status().await.unwrap_err();
+
+        assert!(matches!(err, OperatorError::Unauthenticated));
+        assert!(transport.calls().is_empty());
     }
 
     #[tokio::test]
