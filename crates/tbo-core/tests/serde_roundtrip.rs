@@ -2,6 +2,8 @@
 //! re-encode configuration, guarding the `serde` renames and time formats.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use time::OffsetDateTime;
+
 use tbo_core::config::{Config, DEFAULT_OPERATOR_BASE_URL};
 use tbo_core::domain::{
     BoothState, BoothStatus, CallSessionDetail, Message, MessageStatus, RuntimeMode, StatsOverview,
@@ -43,6 +45,44 @@ fn booth_status_decodes_call_unavailable() {
     // Re-serialize and ensure the new variant keeps its camelCase wire form.
     let round = serde_json::to_string(&status).unwrap();
     assert!(round.contains("\"callUnavailable\""));
+}
+
+#[test]
+fn booth_status_decodes_collapsed_repeat_window() {
+    // The operator collapses identical heartbeat reports into one snapshot
+    // spanning firstSeenAt..updatedAt with a repeat count.
+    let json = r#"{
+        "state": "idle",
+        "updatedAt": "2024-06-01T12:05:00Z",
+        "firstSeenAt": "2024-06-01T12:00:00Z",
+        "repeatCount": 31
+    }"#;
+    let status: BoothStatus = serde_json::from_str(json).unwrap();
+    assert_eq!(status.repeat_count, Some(31));
+    assert_eq!(
+        status.first_seen_at.map(OffsetDateTime::unix_timestamp),
+        Some(1_717_243_200)
+    );
+
+    let round = serde_json::to_string(&status).unwrap();
+    assert!(round.contains("\"firstSeenAt\""));
+    assert!(round.contains("\"repeatCount\":31"));
+}
+
+#[test]
+fn booth_status_without_collapse_metadata_decodes() {
+    // Operators predating the collapsing behaviour omit both fields.
+    let json = r#"{
+        "state": "idle",
+        "updatedAt": "2024-06-01T12:00:00Z"
+    }"#;
+    let status: BoothStatus = serde_json::from_str(json).unwrap();
+    assert!(status.first_seen_at.is_none());
+    assert!(status.repeat_count.is_none());
+
+    let round = serde_json::to_string(&status).unwrap();
+    assert!(!round.contains("firstSeenAt"));
+    assert!(!round.contains("repeatCount"));
 }
 
 #[test]

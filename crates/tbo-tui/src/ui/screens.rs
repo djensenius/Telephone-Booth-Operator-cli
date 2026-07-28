@@ -2990,6 +2990,20 @@ fn push_status_detail(lines: &mut Vec<Line<'static>>, theme: &Theme, status: &Bo
         "Updated:      ",
         format_ts(status.updated_at),
     ));
+    // The booth repeats its status on a heartbeat, so the operator collapses
+    // identical reports into one snapshot. Surface the window instead of a bare
+    // "updated" stamp: how long the booth has held this status, and how many
+    // reports back it up.
+    if let Some(first_seen_at) = status.first_seen_at
+        && first_seen_at != status.updated_at
+    {
+        lines.push(kv_line(theme, "Since:        ", format_ts(first_seen_at)));
+    }
+    if let Some(repeat_count) = status.repeat_count
+        && repeat_count > 1
+    {
+        lines.push(kv_line(theme, "Reports:      ", format!("{repeat_count}")));
+    }
 }
 
 /// A dim-`label` / plain-`value` line for owned values.

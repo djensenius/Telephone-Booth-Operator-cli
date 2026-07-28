@@ -64,6 +64,19 @@ pub struct BoothStatus {
     /// How the booth is being driven, when reported.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub runtime_mode: Option<RuntimeMode>,
+    /// When the booth first reported this status. The booth repeats its status
+    /// on a heartbeat and the operator collapses identical reports into one
+    /// snapshot spanning `first_seen_at..updated_at`. Optional: operators that
+    /// predate the collapsing behaviour omit it.
+    #[serde(
+        default,
+        with = "time::serde::rfc3339::option",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub first_seen_at: Option<OffsetDateTime>,
+    /// How many identical booth reports were collapsed into this snapshot.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repeat_count: Option<u32>,
 }
 
 /// Status push payload (`updatedAt` optional; server stamps it).
