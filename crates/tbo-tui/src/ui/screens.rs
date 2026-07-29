@@ -1524,7 +1524,10 @@ fn push_detail_json_lines(
     lines.push(subheader(theme, title));
     for (idx, raw) in pretty.lines().enumerate() {
         if idx >= PAYLOAD_MAX_LINES {
-            lines.push(note_line(theme, "… payload truncated.".to_owned()));
+            lines.push(note_line(
+                theme,
+                format!("… {} truncated.", title.to_lowercase()),
+            ));
             break;
         }
         lines.push(Line::from(Span::styled(

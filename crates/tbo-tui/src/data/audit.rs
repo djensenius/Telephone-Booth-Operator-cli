@@ -34,7 +34,7 @@ const FILTERS: [(Option<&str>, &str); 7] = [
     (Some("message.reject"), "rejections"),
     (Some("question."), "questions"),
     (Some("apiToken."), "API tokens"),
-    (Some("auth."), "sign-in"),
+    (Some("auth.login"), "sign-in"),
 ];
 
 /// Loads audit entries off the UI thread.
