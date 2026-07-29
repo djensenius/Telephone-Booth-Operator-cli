@@ -9,6 +9,7 @@
 //! applies the result on each tick via `drain`, so rendering never blocks on
 //! the network.
 
+mod audit;
 mod debug;
 mod events;
 mod identity;
@@ -34,6 +35,7 @@ use tbo_auth::{
 use tbo_core::config::Config;
 use tbo_operator_client::{OperatorClient, OperatorError, ReqwestTransport, Result, TokenProvider};
 
+pub use audit::AuditController;
 pub use debug::{AudioChannel, AudioMeterReading, DebugController};
 pub use events::EventsController;
 pub use identity::IdentityController;

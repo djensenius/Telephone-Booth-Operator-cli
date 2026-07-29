@@ -22,10 +22,11 @@ use tbo_audio::PlaybackStatus;
 use tbo_booth_client::{GpioPinSnapshot, LogEntry};
 use tbo_core::config::BoothConfig;
 use tbo_core::domain::{
-    ApiToken, ApiTokenCreated, ApiTokenUsageBucket, BoothEventRecord, BoothEventType, BoothState,
-    BoothStatus, BoothSystemSnapshot, BoothSystemSnapshotEnvelope, CallOutcome, CallSession,
-    CallSessionDetail, Message, MessageStatus, Moderation, ModerationRecommendation, Question,
-    QuestionStatus, RuntimeMode, StatsOverview, StatsWindow, Transcription, TranscriptionStatus,
+    ApiToken, ApiTokenCreated, ApiTokenUsageBucket, AuditLogEntry, BoothEventRecord,
+    BoothEventType, BoothState, BoothStatus, BoothSystemSnapshot, BoothSystemSnapshotEnvelope,
+    CallOutcome, CallSession, CallSessionDetail, Message, MessageStatus, Moderation,
+    ModerationRecommendation, Question, QuestionStatus, RuntimeMode, StatsOverview, StatsWindow,
+    Transcription, TranscriptionStatus,
 };
 use tbo_metrics::{BoothMetrics, MetricsHistory};
 
@@ -60,6 +61,8 @@ pub enum Screen {
     Debug,
     /// API tokens.
     Tokens,
+    /// Audit trail of write actions.
+    Audit,
     /// Settings, identity, and configuration.
     Settings,
     /// Application and connection information.
@@ -67,7 +70,7 @@ pub enum Screen {
 }
 
 /// All screens in display/tab order.
-const ALL: [Screen; 12] = [
+const ALL: [Screen; 13] = [
     Screen::Status,
     Screen::Messages,
     Screen::Questions,
@@ -78,6 +81,7 @@ const ALL: [Screen; 12] = [
     Screen::SystemHealth,
     Screen::Debug,
     Screen::Tokens,
+    Screen::Audit,
     Screen::Settings,
     Screen::About,
 ];
@@ -119,6 +123,7 @@ impl Screen {
             Screen::SystemHealth => '8',
             Screen::Debug => '9',
             Screen::Tokens => '0',
+            Screen::Audit => 'U',
             Screen::Settings => 'S',
             Screen::About => 'A',
         }
@@ -135,6 +140,7 @@ impl Screen {
                 .and_then(|digit| usize::try_from(digit.saturating_sub(1)).ok())
                 .and_then(Screen::from_index),
             '0' => Some(Screen::Tokens),
+            'U' => Some(Screen::Audit),
             'S' => Some(Screen::Settings),
             'A' => Some(Screen::About),
             _ => None,
@@ -152,7 +158,7 @@ impl Screen {
     /// are admin-only.
     #[must_use]
     pub const fn is_admin_only(self) -> bool {
-        matches!(self, Screen::Tokens | Screen::Debug)
+        matches!(self, Screen::Tokens | Screen::Debug | Screen::Audit)
     }
 
     /// The next screen, wrapping around.
@@ -183,6 +189,7 @@ impl Screen {
             Screen::SystemHealth => "System Health",
             Screen::Debug => "Debug",
             Screen::Tokens => "API Tokens",
+            Screen::Audit => "Audit Log",
             Screen::Settings => "Settings",
             Screen::About => "About",
         }
@@ -202,6 +209,7 @@ impl Screen {
             Screen::SystemHealth => "Health",
             Screen::Debug => "Debug",
             Screen::Tokens => "Tokens",
+            Screen::Audit => "Audit",
             Screen::Settings => "Settings",
             Screen::About => "About",
         }
@@ -237,6 +245,7 @@ impl Screen {
                 "On-device debug panel: state, GPIO, audio meters, logs, config, and simulate."
             }
             Screen::Tokens => "API tokens: list, create (shown once), revoke, and usage.",
+            Screen::Audit => "Who took each write action, from which address, and when.",
             Screen::Settings => {
                 "Operator URL, OIDC issuer, configured booths, theme, and identity."
             }
@@ -254,6 +263,7 @@ pub fn render(app: &App, frame: &mut Frame, area: Rect) {
         Screen::Sessions => render_sessions(app, frame, area),
         Screen::Events => render_events(app, frame, area),
         Screen::Tokens => render_tokens(app, frame, area),
+        Screen::Audit => render_audit(app, frame, area),
         Screen::Stats => {
             render_paragraph(frame, area, theme, "Statistics", stats_lines(app, theme));
         }
@@ -1181,6 +1191,181 @@ fn push_timeline_lines(
     }
 }
 
+/// Render the Audit screen: a master list of write actions beside a detail
+/// pane. The detail carries the whole point of the screen — actor, address,
+/// timestamp, and outcome — so it is always shown for the selected row.
+fn render_audit(app: &App, frame: &mut Frame, area: Rect) {
+    let theme = app.theme();
+    let controller = app.audit();
+    match controller.state() {
+        Remote::Ready { value, fetched_at } if !value.is_empty() => {
+            let columns =
+                Layout::horizontal([Constraint::Percentage(46), Constraint::Min(28)]).split(area);
+            render_audit_list(
+                frame,
+                columns[0],
+                theme,
+                value,
+                controller.selected_index(),
+                controller.filter_label(),
+            );
+
+            let mut detail = audit_detail_lines(theme, controller.selected_entry());
+            detail.push(Line::raw(""));
+            if controller.is_refreshing() {
+                detail.push(note_line(theme, "Refreshing…".to_owned()));
+            } else {
+                detail.push(note_line(theme, format!("Fetched {}.", ago(*fetched_at))));
+            }
+            if controller.has_more() {
+                detail.push(hint_line(theme, "Press m for older entries."));
+            }
+            render_paragraph(frame, columns[1], theme, "Detail", detail);
+        }
+        other => render_paragraph(
+            frame,
+            area,
+            theme,
+            "Audit Log",
+            audit_status_lines(theme, other),
+        ),
+    }
+}
+
+/// Body lines for the non-list Audit states (loading, empty, or failed).
+fn audit_status_lines(theme: &Theme, state: &Remote<Vec<AuditLogEntry>>) -> Vec<Line<'static>> {
+    let mut lines = vec![header(theme, Screen::Audit.title()), Line::raw("")];
+    match state {
+        Remote::Idle | Remote::Loading => lines.push(hint_line(theme, "Loading audit trail…")),
+        Remote::Ready { .. } => {
+            lines.push(note_line(
+                theme,
+                "No write actions match this filter.".to_owned(),
+            ));
+            lines.push(hint_line(theme, "Press f to change filter, r to reload."));
+        }
+        Remote::Failed { error, at } => {
+            lines.push(Line::from(Span::styled(
+                format!("Failed to load the audit trail {}.", ago(*at)),
+                Style::new().fg(theme.error),
+            )));
+            lines.push(Line::from(vec![
+                Span::styled("Reason: ", Style::new().fg(theme.dim)),
+                Span::raw(error.clone()),
+            ]));
+            lines.push(hint_line(
+                theme,
+                "The audit trail is admin-only. Press r to retry.",
+            ));
+        }
+    }
+    lines
+}
+
+/// Render the scrollable list of audit entries with the selected row
+/// highlighted. Each row leads with the outcome so denied writes stand out.
+fn render_audit_list(
+    frame: &mut Frame,
+    area: Rect,
+    theme: &Theme,
+    entries: &[AuditLogEntry],
+    selected: usize,
+    filter_label: &str,
+) {
+    let items: Vec<ListItem> = entries
+        .iter()
+        .map(|entry| {
+            ListItem::new(Line::from(vec![
+                audit_outcome_badge(theme, entry),
+                Span::raw(" "),
+                Span::styled(short_time(entry.created_at), Style::new().fg(theme.dim)),
+                Span::raw("  "),
+                Span::raw(entry.action.clone()),
+                Span::raw("  "),
+                Span::styled(entry.actor_label.clone(), Style::new().fg(theme.dim)),
+            ]))
+        })
+        .collect();
+    let list = List::new(items)
+        .block(
+            Block::bordered()
+                .border_style(Style::new().fg(theme.dim))
+                .title(format!(" Audit Log — {filter_label} ")),
+        )
+        .highlight_style(
+            Style::new()
+                .fg(theme.accent)
+                .add_modifier(Modifier::REVERSED | Modifier::BOLD),
+        )
+        .highlight_symbol("> ");
+    let mut list_state = ListState::default();
+    list_state.select(Some(selected));
+    frame.render_stateful_widget(list, area, &mut list_state);
+}
+
+/// A short coloured badge for an entry's outcome.
+fn audit_outcome_badge(theme: &Theme, entry: &AuditLogEntry) -> Span<'static> {
+    let (label, color) = if entry.succeeded() {
+        ("  ok  ", theme.ok)
+    } else if entry.was_denied() {
+        ("denied", theme.error)
+    } else if entry.status_code < 500 {
+        ("reject", theme.warn)
+    } else {
+        (" error", theme.error)
+    };
+    Span::styled(label, Style::new().fg(color).add_modifier(Modifier::BOLD))
+}
+
+/// Build the detail-pane lines for the selected audit entry.
+fn audit_detail_lines(theme: &Theme, entry: Option<&AuditLogEntry>) -> Vec<Line<'static>> {
+    let Some(entry) = entry else {
+        return vec![
+            header(theme, "Action"),
+            Line::raw(""),
+            hint_line(theme, "Select an entry."),
+        ];
+    };
+
+    let mut lines = vec![
+        header(theme, "Action"),
+        Line::raw(""),
+        kv_line(theme, "Action:  ", entry.action.clone()),
+        kv_line(theme, "Who:     ", entry.actor_label.clone()),
+        kv_line(theme, "As:      ", entry.actor_type.label().to_owned()),
+        kv_line(
+            theme,
+            "From:    ",
+            entry.ip.clone().unwrap_or_else(|| "unknown".to_owned()),
+        ),
+        kv_line(theme, "When:    ", format_ts(entry.created_at)),
+        Line::from(vec![
+            Span::styled("Outcome: ", Style::new().fg(theme.dim)),
+            audit_outcome_badge(theme, entry),
+            Span::raw(format!(" {}", entry.status_code)),
+        ]),
+        kv_line(
+            theme,
+            "Request: ",
+            format!("{} {}", entry.method, entry.path),
+        ),
+    ];
+    if let Some(target_type) = &entry.target_type {
+        let target = entry
+            .target_id
+            .as_ref()
+            .map_or_else(|| target_type.clone(), |id| format!("{target_type} {id}"));
+        lines.push(kv_line(theme, "Target:  ", target));
+    }
+    if let Some(user_agent) = &entry.user_agent {
+        lines.push(kv_line(theme, "Agent:   ", user_agent.clone()));
+    }
+    if let Some(metadata) = &entry.metadata {
+        push_detail_json_lines(&mut lines, theme, "Detail", metadata);
+    }
+    lines
+}
+
 /// Render the Events screen: a master list of events beside a detail pane.
 fn render_events(app: &App, frame: &mut Frame, area: Rect) {
     let theme = app.theme();
@@ -1321,12 +1506,22 @@ fn event_detail_lines(theme: &Theme, event: Option<&BoothEventRecord>) -> Vec<Li
 
 /// Append a pretty-printed JSON `payload` block (truncated) to the detail lines.
 fn push_payload_lines(lines: &mut Vec<Line<'static>>, theme: &Theme, payload: &Value) {
-    if payload.is_null() {
+    push_detail_json_lines(lines, theme, "Payload", payload);
+}
+
+/// Append a titled, pretty-printed JSON block (truncated) to the detail lines.
+fn push_detail_json_lines(
+    lines: &mut Vec<Line<'static>>,
+    theme: &Theme,
+    title: &'static str,
+    value: &Value,
+) {
+    if value.is_null() {
         return;
     }
-    let pretty = serde_json::to_string_pretty(payload).unwrap_or_else(|_| payload.to_string());
+    let pretty = serde_json::to_string_pretty(value).unwrap_or_else(|_| value.to_string());
     lines.push(Line::raw(""));
-    lines.push(subheader(theme, "Payload"));
+    lines.push(subheader(theme, title));
     for (idx, raw) in pretty.lines().enumerate() {
         if idx >= PAYLOAD_MAX_LINES {
             lines.push(note_line(theme, "… payload truncated.".to_owned()));
@@ -3300,12 +3495,14 @@ mod tests {
         assert_eq!(Screen::from_nav_key('s'), None);
         assert_eq!(Screen::from_nav_key('a'), None);
         assert_eq!(Screen::from_nav_key('x'), None);
+        assert_eq!(Screen::from_nav_key('u'), None);
+        assert_eq!(Screen::from_nav_key('U'), Some(Screen::Audit));
     }
 
     #[test]
-    fn only_tokens_and_debug_are_admin_only() {
+    fn only_tokens_debug_and_audit_are_admin_only() {
         for screen in Screen::all() {
-            let expected = matches!(screen, Screen::Tokens | Screen::Debug);
+            let expected = matches!(screen, Screen::Tokens | Screen::Debug | Screen::Audit);
             assert_eq!(screen.is_admin_only(), expected, "{screen:?}");
         }
     }

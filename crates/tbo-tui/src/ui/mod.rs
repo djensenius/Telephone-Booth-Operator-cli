@@ -157,6 +157,9 @@ fn status_hints(app: &App) -> &'static str {
         Screen::Tokens => {
             "  ↑/↓ select | n new | d revoke | u usage | r reload | Esc dismiss secret | ? screens"
         }
+        Screen::Audit => {
+            "  ↑/↓ select | f filter | m older | r reload | ? screens | Tab/Right next | q quit"
+        }
     }
 }
 
@@ -350,7 +353,12 @@ fn render_help(app: &App, frame: &mut Frame, area: Rect) {
         theme,
         icons,
         "Admin",
-        &[Screen::Tokens, Screen::Settings, Screen::About],
+        &[
+            Screen::Tokens,
+            Screen::Audit,
+            Screen::Settings,
+            Screen::About,
+        ],
         app.screen(),
         app.is_admin(),
     );

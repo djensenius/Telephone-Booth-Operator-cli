@@ -115,7 +115,7 @@ automatically when the input is not an interactive terminal.
 | `?` | Toggle the help overlay (also offers log in / sign out) |
 | `Tab` / `→` | Next screen |
 | `Shift-Tab` / `←` | Previous screen |
-| `1`–`9`, `0`, `s`, `a` | Jump via the screen palette shortcuts |
+| `1`–`9`, `0`, `S`, `A`, `U` | Jump via the screen palette shortcuts |
 | `j` / `k` / `↑` / `↓` | Move the selection within a list |
 | `r` / `R` | Refresh the active screen |
 | `L` | Log in (Authentik device code) |
@@ -125,7 +125,7 @@ automatically when the input is not an interactive terminal.
 Press **`?`** at any time for a grouped screen palette and your current account
 status, with log in / sign out actions. The screens are
 **Status, Messages, Questions, Events, Sessions, Statistics, Live System, System
-Health, Debug, API Tokens, Settings,** and **About**. Each screen's available
+Health, Debug, API Tokens, Audit Log, Settings,** and **About**. Each screen's available
 actions are shown in the footer hint bar — for example, Messages offers
 approve/reject, translate, re-transcribe/re-moderate, delete, and audio playback
 (`p` play, `space` pause, `s` stop). You can log in with `L` from anywhere; sign
@@ -148,7 +148,7 @@ Operator accounts come in two tiers, derived live from Authentik group
 membership by the operator API and reported on `GET /v1/auth/me`:
 
 - **Administrators** can manage questions (activate, deactivate, archive, and
-  create) and run the data export/import commands below.
+  create), read the Audit Log, and run the data export/import commands below.
 - **Regular operators** get a read-only Questions screen; the management keys
   (`a`/`e`/`d`/`n`) surface a short "requires an administrator account" hint
   instead of acting.
@@ -157,6 +157,26 @@ membership by the operator API and reported on `GET /v1/auth/me`:
 account has been deleted or removed from the operator group in Authentik, the
 next check signs you out automatically rather than trusting the cached token, so
 a revoked account cannot keep operating.
+
+### Audit log (who did what)
+
+Every write action against the operator API — approving or rejecting a message,
+transcription and translation work, question and instruction edits, API token
+lifecycle — is recorded with the operator or token that made it, the address it
+came from, the time, and the outcome. Rejected attempts are recorded too.
+
+Press **`U`** for the **Audit Log** screen. It lists the trail newest-first:
+
+- `↑`/`↓` selects an entry; the detail pane shows who, from where, when, the
+  request, the target, and any action-specific detail.
+- `f` cycles the action filter (all, messages, approvals, rejections,
+  questions, API tokens, sign-in).
+- `m` loads older entries.
+- `r` reloads from the newest page.
+
+The screen is admin-only, matching the server: `GET /v1/audit-logs` rejects a
+non-admin session with `403`. Booth telemetry heartbeats are excluded from the
+trail by default, so the log stays a record of decisions rather than chatter.
 
 ### Admin data backup (export / import)
 

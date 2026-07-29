@@ -10,12 +10,13 @@ use time::format_description::well_known::Rfc3339;
 use futures::stream::{BoxStream, Stream, StreamExt};
 
 use tbo_core::domain::{
-    ApiToken, ApiTokenCreated, ApiTokenUsageBucket, BoothEventList, BoothEventRecord, BoothStatus,
-    BoothSystemSnapshotList, CallSessionDetail, CallSessionList, CreateApiTokenRequest,
-    DataImportSummary, Message, MessageDecision, MessageDecisionKind, MessageList, MessageStatus,
-    MetricFilter, MetricFilterInput, Moderation, OperatorMe, Question, QuestionCreate,
-    QuestionList, QuestionStatus, StatsOverview, StatsWindow, StatusHistory, Transcription,
-    TranscriptionList, TranslationSubmit, UploadSasKind, UploadSasRequest, UploadSlot,
+    ApiToken, ApiTokenCreated, ApiTokenUsageBucket, AuditLogPage, AuditQuery, BoothEventList,
+    BoothEventRecord, BoothStatus, BoothSystemSnapshotList, CallSessionDetail, CallSessionList,
+    CreateApiTokenRequest, DataImportSummary, Message, MessageDecision, MessageDecisionKind,
+    MessageList, MessageStatus, MetricFilter, MetricFilterInput, Moderation, OperatorMe, Question,
+    QuestionCreate, QuestionList, QuestionStatus, StatsOverview, StatsWindow, StatusHistory,
+    Transcription, TranscriptionList, TranslationSubmit, UploadSasKind, UploadSasRequest,
+    UploadSlot,
 };
 
 use crate::error::{OperatorError, Result};
@@ -220,6 +221,46 @@ impl<T: HttpTransport, A: TokenProvider> OperatorClient<T, A> {
     pub async fn session(&self, id: &str) -> Result<CallSessionDetail> {
         self.get_json(&format!("/v1/sessions/{id}"), &[], true)
             .await
+    }
+
+    /// List audit entries, newest first (`GET /v1/audit-logs`).
+    ///
+    /// Admin-only on the server; a non-admin operator gets `403`. `action` is
+    /// matched as a prefix, so `message.` returns the whole family.
+    pub async fn audit_logs(&self, filter: &AuditQuery) -> Result<AuditLogPage> {
+        let mut query = Vec::new();
+        if let Some(action) = &filter.action {
+            query.push(("action", action.clone()));
+        }
+        if let Some(actor_type) = filter.actor_type {
+            query.push(("actorType", actor_type.as_query().to_owned()));
+        }
+        if let Some(actor_user_id) = &filter.actor_user_id {
+            query.push(("actorUserId", actor_user_id.clone()));
+        }
+        if let Some(cursor) = &filter.cursor {
+            query.push(("cursor", cursor.clone()));
+        }
+        push_limit(&mut query, filter.limit);
+        self.get_json("/v1/audit-logs", &query, true).await
+    }
+
+    /// The audit trail for one thing
+    /// (`GET /v1/audit-logs/targets/{target_type}/{target_id}`).
+    pub async fn audit_log_target(
+        &self,
+        target_type: &str,
+        target_id: &str,
+        limit: Option<u32>,
+    ) -> Result<AuditLogPage> {
+        let mut query = Vec::new();
+        push_limit(&mut query, limit);
+        self.get_json(
+            &format!("/v1/audit-logs/targets/{target_type}/{target_id}"),
+            &query,
+            true,
+        )
+        .await
     }
 
     /// The signed-in operator's profile (`GET /v1/auth/me`).
