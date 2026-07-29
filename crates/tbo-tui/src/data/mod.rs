@@ -34,7 +34,7 @@ use tbo_auth::{
 use tbo_core::config::Config;
 use tbo_operator_client::{OperatorClient, OperatorError, ReqwestTransport, Result, TokenProvider};
 
-pub use debug::DebugController;
+pub use debug::{AudioChannel, AudioMeterReading, DebugController};
 pub use events::EventsController;
 pub use identity::IdentityController;
 pub use messages::MessagesController;

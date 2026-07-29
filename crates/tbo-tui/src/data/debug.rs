@@ -43,6 +43,134 @@ const LOG_LIMIT: usize = 200;
 /// most to least severe.
 const LOG_LEVELS: [&str; 5] = ["error", "warn", "info", "debug", "trace"];
 
+/// How long a telemetry level sample stays fresh. The booth emits meter samples
+/// at roughly 20 Hz, so this is comfortably above the expected cadence while
+/// still catching a stalled or dropped socket within a few frames.
+const TELEMETRY_SAMPLE_TTL: Duration = Duration::from_millis(500);
+
+/// How long a polled level sample stays fresh. REST rounds only arrive every
+/// [`POLL_INTERVAL`], so this allows one missed round before going stale.
+const POLL_SAMPLE_TTL: Duration = Duration::from_secs(5);
+
+/// How long a peak reading is held at full value before it starts decaying.
+const PEAK_HOLD: Duration = Duration::from_millis(1_500);
+
+/// How fast a held peak decays once [`PEAK_HOLD`] has elapsed, in dB/second.
+const PEAK_DECAY_DB_PER_SEC: f32 = 20.0;
+
+/// The dBFS floor used for silence and for fully-decayed peaks.
+const DBFS_FLOOR: f32 = -120.0;
+
+/// Which audio meter channel a reading refers to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AudioChannel {
+    /// The booth microphone (capture) meter.
+    Input,
+    /// The booth speaker (playback) meter.
+    Output,
+}
+
+impl AudioChannel {
+    /// Index into [`DebugController`]'s per-channel meter state.
+    const fn index(self) -> usize {
+        match self {
+            Self::Input => 0,
+            Self::Output => 1,
+        }
+    }
+}
+
+/// Per-channel meter bookkeeping: when the last sample landed, how long it stays
+/// fresh, and the held peak used for VU-style peak ballistics.
+#[derive(Debug, Clone, Copy)]
+struct AudioChannelState {
+    /// When the most recent sample for this channel was applied.
+    last_sample: Instant,
+    /// How long that sample stays fresh, depending on its source.
+    ttl: Duration,
+    /// The peak value currently held, before decay is applied.
+    held_peak_dbfs: f32,
+    /// When [`held_peak_dbfs`](Self::held_peak_dbfs) was last raised.
+    held_since: Instant,
+}
+
+impl AudioChannelState {
+    /// Seed a channel from a fresh sample.
+    fn new(now: Instant, ttl: Duration, peak_dbfs: f32) -> Self {
+        Self {
+            last_sample: now,
+            ttl,
+            held_peak_dbfs: peak_dbfs,
+            held_since: now,
+        }
+    }
+
+    /// Fold a new sample in, raising the held peak (and restarting the hold)
+    /// only when the sample exceeds the currently decayed peak.
+    fn observe(&mut self, now: Instant, ttl: Duration, peak_dbfs: f32) {
+        let decayed = self.decayed_peak_dbfs(now);
+        self.last_sample = now;
+        self.ttl = ttl;
+        if peak_dbfs >= decayed {
+            self.held_peak_dbfs = peak_dbfs;
+            self.held_since = now;
+        } else {
+            self.held_peak_dbfs = decayed;
+            self.held_since = now.checked_sub(PEAK_HOLD).unwrap_or(now);
+        }
+    }
+
+    /// Whether the last sample is older than its time-to-live.
+    fn is_stale(&self, now: Instant) -> bool {
+        now.duration_since(self.last_sample) >= self.ttl
+    }
+
+    /// The held peak with decay applied for the elapsed hold time.
+    fn decayed_peak_dbfs(&self, now: Instant) -> f32 {
+        let elapsed = now.duration_since(self.held_since);
+        let Some(decaying) = elapsed.checked_sub(PEAK_HOLD) else {
+            return self.held_peak_dbfs;
+        };
+        #[allow(clippy::cast_possible_truncation)]
+        let decay = decaying.as_secs_f64() as f32 * PEAK_DECAY_DB_PER_SEC;
+        (self.held_peak_dbfs - decay).max(DBFS_FLOOR)
+    }
+}
+
+/// A resolved audio meter reading for display: the level and peak to draw, plus
+/// whether the underlying sample has gone stale.
+///
+/// A stale reading is *not* the same as silence: it means the booth stopped
+/// reporting, so the UI must render it distinctly rather than showing an empty
+/// bar over a possibly-still-playing booth.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct AudioMeterReading {
+    level_dbfs: f32,
+    peak_dbfs: f32,
+    stale: bool,
+}
+
+impl AudioMeterReading {
+    /// The channel level in dBFS. Meaningless when [`is_stale`](Self::is_stale).
+    #[must_use]
+    pub const fn level_dbfs(self) -> f32 {
+        self.level_dbfs
+    }
+
+    /// The held (decaying) peak in dBFS. Meaningless when
+    /// [`is_stale`](Self::is_stale).
+    #[must_use]
+    pub const fn peak_dbfs(self) -> f32 {
+        self.peak_dbfs
+    }
+
+    /// Whether no sample has arrived recently enough to trust these values.
+    #[must_use]
+    pub const fn is_stale(self) -> bool {
+        self.stale
+    }
+}
+
 /// The outcome of one polling round: each endpoint's result captured
 /// independently so a single failure doesn't blank the rest of the panel.
 struct DebugFetch {
@@ -77,6 +205,7 @@ where
     state: Option<StatusSnapshot>,
     gpio: Option<GpioSnapshot>,
     audio: Option<AudioMeterSnapshot>,
+    audio_channels: [Option<AudioChannelState>; 2],
     logs: Vec<LogEntry>,
     config: Option<ConfigRedacted>,
     live: bool,
@@ -138,6 +267,7 @@ where
             state: None,
             gpio: None,
             audio: None,
+            audio_channels: [None, None],
             logs: Vec::new(),
             config: None,
             live: false,
@@ -222,6 +352,38 @@ where
     #[must_use]
     pub fn audio(&self) -> Option<&AudioMeterSnapshot> {
         self.audio.as_ref()
+    }
+
+    /// The display-ready reading for one audio channel, or `None` when the booth
+    /// has never reported meters.
+    ///
+    /// The reading carries peak-hold ballistics and a staleness flag derived
+    /// from when the last sample landed, so a booth that stopped reporting is
+    /// distinguishable from one that is genuinely silent.
+    #[must_use]
+    pub fn audio_meter(&self, channel: AudioChannel) -> Option<AudioMeterReading> {
+        self.audio_meter_at(channel, Instant::now())
+    }
+
+    /// [`audio_meter`](Self::audio_meter) at an explicit instant.
+    fn audio_meter_at(&self, channel: AudioChannel, now: Instant) -> Option<AudioMeterReading> {
+        let audio = self.audio.as_ref()?;
+        let (level_dbfs, snapshot_peak) = match channel {
+            AudioChannel::Input => (audio.input_level_dbfs, audio.input_peak_dbfs),
+            AudioChannel::Output => (audio.output_level_dbfs, audio.output_peak_dbfs),
+        };
+        let Some(state) = self.audio_channels[channel.index()] else {
+            return Some(AudioMeterReading {
+                level_dbfs,
+                peak_dbfs: snapshot_peak,
+                stale: true,
+            });
+        };
+        Some(AudioMeterReading {
+            level_dbfs,
+            peak_dbfs: state.decayed_peak_dbfs(now).max(level_dbfs),
+            stale: state.is_stale(now),
+        })
     }
 
     /// The latest batch of log lines.
@@ -354,7 +516,7 @@ where
             Err(error) => errors.push(format!("gpio: {error}")),
         }
         match fetch.audio {
-            Ok(value) => self.audio = Some(value),
+            Ok(value) => self.apply_audio_snapshot(value),
             Err(error) => errors.push(format!("audio: {error}")),
         }
         match fetch.logs {
@@ -504,17 +666,42 @@ where
     }
 
     /// Apply an audio level-meter sample to the cached snapshot, converting the
-    /// linear `[0,1]` magnitudes to dBFS.
+    /// linear `[0,1]` magnitudes to dBFS and refreshing the channel's freshness
+    /// and peak-hold state.
     fn apply_audio_level(&mut self, level: &AudioLevel) {
         let audio = self.audio.get_or_insert_with(silent_audio_snapshot);
         let level_dbfs = linear_to_dbfs(level.rms);
         let peak_dbfs = linear_to_dbfs(level.peak);
-        if level.channel == "output" {
+        let channel = if level.channel == "output" {
             audio.output_level_dbfs = level_dbfs;
             audio.output_peak_dbfs = peak_dbfs;
+            AudioChannel::Output
         } else {
             audio.input_level_dbfs = level_dbfs;
             audio.input_peak_dbfs = peak_dbfs;
+            AudioChannel::Input
+        };
+        self.observe_audio_channel(channel, TELEMETRY_SAMPLE_TTL, peak_dbfs);
+    }
+
+    /// Replace the cached audio snapshot from a REST poll, marking both channels
+    /// as freshly sampled on the slower polling cadence.
+    fn apply_audio_snapshot(&mut self, snapshot: AudioMeterSnapshot) {
+        let input_peak = snapshot.input_peak_dbfs;
+        let output_peak = snapshot.output_peak_dbfs;
+        self.audio = Some(snapshot);
+        self.observe_audio_channel(AudioChannel::Input, POLL_SAMPLE_TTL, input_peak);
+        self.observe_audio_channel(AudioChannel::Output, POLL_SAMPLE_TTL, output_peak);
+    }
+
+    /// Record that `channel` was sampled now, folding `peak_dbfs` into its
+    /// peak-hold state.
+    fn observe_audio_channel(&mut self, channel: AudioChannel, ttl: Duration, peak_dbfs: f32) {
+        let now = Instant::now();
+        let slot = &mut self.audio_channels[channel.index()];
+        match slot {
+            Some(state) => state.observe(now, ttl, peak_dbfs),
+            None => *slot = Some(AudioChannelState::new(now, ttl, peak_dbfs)),
         }
     }
 
@@ -948,6 +1135,118 @@ mod tests {
         assert!((audio.output_level_dbfs - 0.0).abs() < 1e-3);
         // The untouched input channel stays at the silent floor.
         assert!(audio.input_level_dbfs <= -120.0);
+        // Only the sampled channel is tracked for freshness; the other is stale.
+        let now = Instant::now();
+        assert!(
+            !controller
+                .audio_meter_at(AudioChannel::Output, now)
+                .unwrap()
+                .is_stale()
+        );
+        assert!(
+            controller
+                .audio_meter_at(AudioChannel::Input, now)
+                .unwrap()
+                .is_stale()
+        );
+    }
+
+    #[test]
+    fn audio_meter_goes_stale_after_telemetry_stops() {
+        let mut controller = controller(RoutingTransport::default());
+        controller.apply_record(record(
+            1,
+            TelemetryEvent::AudioLevel(AudioLevel {
+                channel: "output".to_owned(),
+                peak: 0.5,
+                rms: 0.25,
+                at_monotonic_ns: 1,
+            }),
+        ));
+        let now = Instant::now();
+        assert!(
+            !controller
+                .audio_meter_at(AudioChannel::Output, now)
+                .unwrap()
+                .is_stale()
+        );
+        assert!(
+            controller
+                .audio_meter_at(AudioChannel::Output, now + TELEMETRY_SAMPLE_TTL)
+                .unwrap()
+                .is_stale()
+        );
+    }
+
+    #[test]
+    fn polled_audio_stays_fresh_across_one_missed_round() {
+        let mut controller = controller(RoutingTransport::default());
+        controller.apply_audio_snapshot(silent_audio_snapshot());
+        let now = Instant::now();
+        assert!(
+            !controller
+                .audio_meter_at(AudioChannel::Input, now + POLL_INTERVAL * 2)
+                .unwrap()
+                .is_stale()
+        );
+        assert!(
+            controller
+                .audio_meter_at(AudioChannel::Input, now + POLL_SAMPLE_TTL)
+                .unwrap()
+                .is_stale()
+        );
+    }
+
+    #[test]
+    fn audio_meter_is_none_before_any_snapshot() {
+        let controller = controller(RoutingTransport::default());
+        assert!(controller.audio_meter(AudioChannel::Input).is_none());
+    }
+
+    #[test]
+    fn audio_peak_is_held_then_decays() {
+        let mut controller = controller(RoutingTransport::default());
+        let loud = AudioLevel {
+            channel: "output".to_owned(),
+            peak: 1.0,
+            rms: 1.0,
+            at_monotonic_ns: 1,
+        };
+        controller.apply_record(record(1, TelemetryEvent::AudioLevel(loud)));
+        let start = Instant::now();
+        // A quieter sample must not pull the held peak down immediately.
+        controller.apply_record(record(
+            2,
+            TelemetryEvent::AudioLevel(AudioLevel {
+                channel: "output".to_owned(),
+                peak: 0.01,
+                rms: 0.01,
+                at_monotonic_ns: 2,
+            }),
+        ));
+        let held = controller
+            .audio_meter_at(AudioChannel::Output, start)
+            .unwrap();
+        assert!(
+            held.peak_dbfs() > -1.0,
+            "peak not held: {}",
+            held.peak_dbfs()
+        );
+
+        // After the hold window the peak decays toward the level.
+        let decayed = controller
+            .audio_meter_at(
+                AudioChannel::Output,
+                start + PEAK_HOLD + Duration::from_secs(1),
+            )
+            .unwrap();
+        assert!(
+            decayed.peak_dbfs() < held.peak_dbfs(),
+            "peak did not decay: {}",
+            decayed.peak_dbfs()
+        );
+        // The peak never reads below the current level.
+        assert!(decayed.peak_dbfs() >= decayed.level_dbfs());
     }
 
     #[test]
