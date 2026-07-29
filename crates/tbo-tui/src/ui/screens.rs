@@ -32,7 +32,9 @@ use tbo_metrics::{BoothMetrics, MetricsHistory};
 use super::format_login_expiry;
 use crate::app::App;
 use crate::auth::AuthPhase;
-use crate::data::{DebugController, Remote, SystemHealthController};
+use crate::data::{
+    AudioChannel, AudioMeterReading, DebugController, Remote, SystemHealthController,
+};
 use crate::ui::theme::Theme;
 
 /// The set of top-level screens, in tab order.
@@ -2410,14 +2412,12 @@ fn render_debug_audio(frame: &mut Frame, area: Rect, theme: &Theme, controller: 
         lines.push(audio_meter_line(
             theme,
             "In  ",
-            audio.input_level_dbfs,
-            audio.input_peak_dbfs,
+            controller.audio_meter(AudioChannel::Input),
         ));
         lines.push(audio_meter_line(
             theme,
             "Out ",
-            audio.output_level_dbfs,
-            audio.output_peak_dbfs,
+            controller.audio_meter(AudioChannel::Output),
         ));
         if let Some(device) = &audio.current_device {
             lines.push(kv_line(theme, "Device: ", device.clone()));
@@ -2435,20 +2435,32 @@ fn render_debug_audio(frame: &mut Frame, area: Rect, theme: &Theme, controller: 
 }
 
 /// One audio channel meter: a level bar with level and peak dBFS read-outs.
+///
+/// A stale reading (the booth stopped reporting levels) is dimmed and shows `—`
+/// for both read-outs rather than an empty bar, so a dropped telemetry socket
+/// can't masquerade as a silent booth.
 fn audio_meter_line(
     theme: &Theme,
     label: &'static str,
-    level_dbfs: f32,
-    peak_dbfs: f32,
+    reading: Option<AudioMeterReading>,
 ) -> Line<'static> {
-    let ratio = dbfs_ratio(level_dbfs);
+    let Some(reading) = reading.filter(|reading| !reading.is_stale()) else {
+        return Line::from(vec![
+            Span::styled(label, Style::new().fg(theme.dim)),
+            Span::styled(
+                format!("{}      — dBFS  peak      —", percent_bar(0.0)),
+                Style::new().fg(theme.dim),
+            ),
+        ]);
+    };
+    let ratio = dbfs_ratio(reading.level_dbfs());
     Line::from(vec![
         Span::styled(label, Style::new().fg(theme.dim)),
         Span::raw(format!(
             "{} {:>6.1} dBFS  peak {:>6.1}",
             percent_bar(ratio),
-            f64::from(level_dbfs),
-            f64::from(peak_dbfs),
+            f64::from(reading.level_dbfs()),
+            f64::from(reading.peak_dbfs()),
         )),
     ])
 }
