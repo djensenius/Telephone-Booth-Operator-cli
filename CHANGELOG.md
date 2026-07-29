@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.6.0](https://github.com/djensenius/Telephone-Booth-Operator-cli/compare/v0.5.1...v0.6.0) (2026-07-29)
+
+
+### Features
+
+* show the collapsed status window on the Status screen ([#99](https://github.com/djensenius/Telephone-Booth-Operator-cli/issues/99)) ([b9e5a3f](https://github.com/djensenius/Telephone-Booth-Operator-cli/commit/b9e5a3f512fcc2febe9e1a1fb9b6e63ca77c1f30))
+
+
+### Bug Fixes
+
+* require auth for OperatorClient::status ([#97](https://github.com/djensenius/Telephone-Booth-Operator-cli/issues/97)) ([26504ab](https://github.com/djensenius/Telephone-Booth-Operator-cli/commit/26504ab8e91e8940ba36378d5ca7b687e481a340)), closes [#96](https://github.com/djensenius/Telephone-Booth-Operator-cli/issues/96)
+
 ## [0.5.1](https://github.com/djensenius/Telephone-Booth-Operator-cli/compare/v0.5.0...v0.5.1) (2026-07-20)
 
 
