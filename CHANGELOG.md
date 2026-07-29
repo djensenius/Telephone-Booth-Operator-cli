@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.1](https://github.com/djensenius/Telephone-Booth-Operator-cli/compare/v0.6.0...v0.6.1) (2026-07-29)
+
+
+### Bug Fixes
+
+* handle stale audio meters and hold peaks in debug panel ([#101](https://github.com/djensenius/Telephone-Booth-Operator-cli/issues/101)) ([85788fb](https://github.com/djensenius/Telephone-Booth-Operator-cli/commit/85788fbff54d6da37307c9614a877efa40e154a4)), closes [#100](https://github.com/djensenius/Telephone-Booth-Operator-cli/issues/100)
+
 ## [0.6.0](https://github.com/djensenius/Telephone-Booth-Operator-cli/compare/v0.5.1...v0.6.0) (2026-07-29)
 
 
