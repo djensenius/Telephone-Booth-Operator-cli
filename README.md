@@ -175,8 +175,9 @@ Press **`U`** for the **Audit Log** screen. It lists the trail newest-first:
 - `r` reloads from the newest page.
 
 The screen is admin-only, matching the server: `GET /v1/audit-logs` rejects a
-non-admin session with `403`. Booth telemetry heartbeats are excluded from the
-trail by default, so the log stays a record of decisions rather than chatter.
+non-admin session with `403`. Successful booth telemetry heartbeats are excluded
+from the trail by default, so the log stays a record of decisions rather than
+chatter; a heartbeat the server *rejected* is always recorded.
 
 ### Admin data backup (export / import)
 
