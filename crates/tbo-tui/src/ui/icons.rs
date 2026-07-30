@@ -50,6 +50,7 @@ impl Icons {
             Screen::SystemHealth => "\u{f21e} ", // heartbeat
             Screen::Debug => "\u{f188} ",        // bug
             Screen::Tokens => "\u{f084} ",       // key
+            Screen::Audit => "\u{f0f6} ",        // file-text (ledger)
             Screen::Settings => "\u{f013} ",     // cog
             Screen::About => "\u{f129} ",        // info
         }

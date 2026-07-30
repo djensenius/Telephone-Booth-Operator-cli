@@ -11,9 +11,10 @@ use tokio::time::Duration;
 
 use crate::auth::{AuthController, AuthPhase};
 use crate::data::{
-    DebugController, EventsController, IdentityController, MessagesController, PlaybackController,
-    QuestionsController, SessionTokenProvider, SessionsController, SharedSession, StatsController,
-    StatusController, SystemController, SystemHealthController, TokensController,
+    AuditController, DebugController, EventsController, IdentityController, MessagesController,
+    PlaybackController, QuestionsController, SessionTokenProvider, SessionsController,
+    SharedSession, StatsController, StatusController, SystemController, SystemHealthController,
+    TokensController,
 };
 use crate::event::{AppEvent, EventLoop};
 use crate::tui::Tui;
@@ -47,6 +48,7 @@ pub struct App {
     system_health: Option<SystemHealthController>,
     debug: Option<DebugController>,
     tokens: TokensController,
+    audit: AuditController,
     playback: PlaybackController,
     modal: Option<Modal>,
     show_help: bool,
@@ -112,7 +114,8 @@ impl App {
             system: SystemController::new(api.clone()),
             system_health,
             debug,
-            tokens: TokensController::new(api),
+            tokens: TokensController::new(api.clone()),
+            audit: AuditController::new(api),
             playback,
             modal: None,
             show_help: false,
@@ -292,6 +295,12 @@ impl App {
         &self.questions
     }
 
+    /// The audit controller (drives the Audit Log screen).
+    #[must_use]
+    pub fn audit(&self) -> &AuditController {
+        &self.audit
+    }
+
     /// The sessions controller (drives the Sessions screen).
     #[must_use]
     pub fn sessions(&self) -> &SessionsController {
@@ -392,6 +401,7 @@ impl App {
                     }
                     self.drain_debug_actions();
                     self.tokens.tick(self.screen == Screen::Tokens);
+                    self.audit.tick(self.screen == Screen::Audit);
                     self.drain_token_actions();
                     self.drain_playback();
                     self.toasts.prune();
@@ -447,7 +457,10 @@ impl App {
             }
             KeyCode::Tab | KeyCode::Right => self.screen = self.next_screen(),
             KeyCode::BackTab | KeyCode::Left => self.screen = self.prev_screen(),
-            KeyCode::Char('u' | 'U') if self.screen == Screen::Settings => {
+            // Uppercase palette keys navigate from anywhere; the guarded
+            // per-screen actions below deliberately keep the lowercase form.
+            KeyCode::Char('U') => self.jump_to_nav_key('U'),
+            KeyCode::Char('u') if self.screen == Screen::Settings => {
                 self.open_operator_url_prompt();
             }
             KeyCode::Char('b' | 'B') if self.screen == Screen::Settings => {
@@ -463,6 +476,12 @@ impl App {
             KeyCode::Up | KeyCode::Char('k') => self.select_prev_active(),
             KeyCode::Char('r' | 'R') => self.refresh_active(),
             KeyCode::Char('w' | 'W') if self.screen == Screen::Stats => self.stats.cycle_window(),
+            KeyCode::Char('f' | 'F') if self.screen == Screen::Audit => {
+                self.audit.cycle_filter();
+            }
+            KeyCode::Char('m' | 'M') if self.screen == Screen::Audit => {
+                self.audit.load_more();
+            }
             KeyCode::Char('f' | 'F') if self.screen == Screen::Events => {
                 self.events.toggle_follow();
             }
@@ -513,7 +532,7 @@ impl App {
             KeyCode::Char('d' | 'D') if self.screen == Screen::Tokens => {
                 self.open_revoke_confirm();
             }
-            KeyCode::Char('u' | 'U') if self.screen == Screen::Tokens => {
+            KeyCode::Char('u') if self.screen == Screen::Tokens => {
                 self.tokens.load_usage_selected();
             }
             KeyCode::Char('v' | 'V') if self.screen == Screen::Debug => {
@@ -1142,6 +1161,7 @@ impl App {
                 }
             }
             Screen::Tokens => self.tokens.refresh(),
+            Screen::Audit => self.audit.refresh(),
             Screen::Settings | Screen::About => {}
         }
     }
@@ -1154,6 +1174,7 @@ impl App {
             Screen::Sessions => self.sessions.select_next(),
             Screen::Events => self.events.select_next(),
             Screen::Tokens => self.tokens.select_next(),
+            Screen::Audit => self.audit.select_next(),
             _ => {}
         }
     }
@@ -1166,6 +1187,7 @@ impl App {
             Screen::Sessions => self.sessions.select_prev(),
             Screen::Events => self.events.select_prev(),
             Screen::Tokens => self.tokens.select_prev(),
+            Screen::Audit => self.audit.select_prev(),
             _ => {}
         }
     }
@@ -1259,7 +1281,7 @@ mod tests {
     fn admin_screens_bounce_without_affirmative_admin() {
         // Non-admin (or unknown/signed-out, both surface as `is_admin = false`)
         // must be bounced off every admin-only screen.
-        for screen in [Screen::Tokens, Screen::Debug] {
+        for screen in [Screen::Tokens, Screen::Debug, Screen::Audit] {
             assert!(should_bounce_from_admin_screen(screen, false));
             assert!(!should_bounce_from_admin_screen(screen, true));
         }

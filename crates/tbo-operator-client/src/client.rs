@@ -10,12 +10,13 @@ use time::format_description::well_known::Rfc3339;
 use futures::stream::{BoxStream, Stream, StreamExt};
 
 use tbo_core::domain::{
-    ApiToken, ApiTokenCreated, ApiTokenUsageBucket, BoothEventList, BoothEventRecord, BoothStatus,
-    BoothSystemSnapshotList, CallSessionDetail, CallSessionList, CreateApiTokenRequest,
-    DataImportSummary, Message, MessageDecision, MessageDecisionKind, MessageList, MessageStatus,
-    MetricFilter, MetricFilterInput, Moderation, OperatorMe, Question, QuestionCreate,
-    QuestionList, QuestionStatus, StatsOverview, StatsWindow, StatusHistory, Transcription,
-    TranscriptionList, TranslationSubmit, UploadSasKind, UploadSasRequest, UploadSlot,
+    ApiToken, ApiTokenCreated, ApiTokenUsageBucket, AuditLogPage, AuditQuery, BoothEventList,
+    BoothEventRecord, BoothStatus, BoothSystemSnapshotList, CallSessionDetail, CallSessionList,
+    CreateApiTokenRequest, DataImportSummary, Message, MessageDecision, MessageDecisionKind,
+    MessageList, MessageStatus, MetricFilter, MetricFilterInput, Moderation, OperatorMe, Question,
+    QuestionCreate, QuestionList, QuestionStatus, StatsOverview, StatsWindow, StatusHistory,
+    Transcription, TranscriptionList, TranslationSubmit, UploadSasKind, UploadSasRequest,
+    UploadSlot,
 };
 
 use crate::error::{OperatorError, Result};
@@ -220,6 +221,50 @@ impl<T: HttpTransport, A: TokenProvider> OperatorClient<T, A> {
     pub async fn session(&self, id: &str) -> Result<CallSessionDetail> {
         self.get_json(&format!("/v1/sessions/{id}"), &[], true)
             .await
+    }
+
+    /// List audit entries, newest first (`GET /v1/audit-logs`).
+    ///
+    /// Admin-only on the server; a non-admin operator gets `403`. `action` is
+    /// matched as a prefix, so `message.` returns the whole family.
+    pub async fn audit_logs(&self, filter: &AuditQuery) -> Result<AuditLogPage> {
+        let mut query = Vec::new();
+        if let Some(action) = &filter.action {
+            query.push(("action", action.clone()));
+        }
+        if let Some(actor_type) = filter.actor_type {
+            query.push(("actorType", actor_type.as_query().to_owned()));
+        }
+        if let Some(actor_user_id) = &filter.actor_user_id {
+            query.push(("actorUserId", actor_user_id.clone()));
+        }
+        if let Some(cursor) = &filter.cursor {
+            query.push(("cursor", cursor.clone()));
+        }
+        push_limit(&mut query, filter.limit);
+        self.get_json("/v1/audit-logs", &query, true).await
+    }
+
+    /// The audit trail for one thing
+    /// (`GET /v1/audit-logs/targets/{target_type}/{target_id}`).
+    pub async fn audit_log_target(
+        &self,
+        target_type: &str,
+        target_id: &str,
+        limit: Option<u32>,
+        cursor: Option<&str>,
+    ) -> Result<AuditLogPage> {
+        let mut query = Vec::new();
+        if let Some(cursor) = cursor {
+            query.push(("cursor", cursor.to_owned()));
+        }
+        push_limit(&mut query, limit);
+        self.get_json(
+            &format!("/v1/audit-logs/targets/{target_type}/{target_id}"),
+            &query,
+            true,
+        )
+        .await
     }
 
     /// The signed-in operator's profile (`GET /v1/auth/me`).
@@ -848,6 +893,7 @@ mod tests {
 
     use super::*;
     use crate::transport::HttpResponse;
+    use tbo_core::domain::AuditActorType;
 
     /// A recorded request, captured for assertions.
     #[derive(Debug, Clone)]
@@ -1007,6 +1053,129 @@ mod tests {
 
     fn authed(transport: FakeTransport) -> OperatorClient<FakeTransport, StaticTokenProvider> {
         OperatorClient::with_transport(transport, StaticTokenProvider::new("token-123"))
+    }
+
+    /// One entry, as the API serializes it.
+    const AUDIT_ENTRY_JSON: &str = r#"{
+        "id": "11111111-1111-4111-8111-111111111111",
+        "action": "message.approve",
+        "targetType": "message",
+        "targetId": "22222222-2222-4222-8222-222222222222",
+        "actorType": "operator",
+        "actorUserId": "33333333-3333-4333-8333-333333333333",
+        "actorTokenId": null,
+        "actorLabel": "operator@example.com",
+        "ip": "203.0.113.7",
+        "userAgent": "tbo-tui/0.6.1",
+        "method": "POST",
+        "path": "/v1/messages/22222222-2222-4222-8222-222222222222/decision",
+        "statusCode": 200,
+        "metadata": {"decision": "approve"},
+        "createdAt": "2026-07-20T12:00:00Z"
+    }"#;
+
+    fn audit_page_json(next_cursor: Option<&str>) -> String {
+        let cursor = next_cursor.map_or_else(|| "null".to_owned(), |c| format!("\"{c}\""));
+        format!(r#"{{"items":[{AUDIT_ENTRY_JSON}],"nextCursor":{cursor}}}"#)
+    }
+
+    #[tokio::test]
+    async fn audit_logs_maps_every_filter_onto_the_query() {
+        let transport = FakeTransport::with_responses(vec![ok(&audit_page_json(Some("next-1")))]);
+        let client = authed(transport.clone());
+
+        let page = client
+            .audit_logs(&AuditQuery {
+                action: Some("message.".to_owned()),
+                actor_type: Some(AuditActorType::Operator),
+                actor_user_id: Some("33333333-3333-4333-8333-333333333333".to_owned()),
+                cursor: Some("prev-0".to_owned()),
+                limit: Some(25),
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(page.next_cursor.as_deref(), Some("next-1"));
+        let entry = &page.items[0];
+        assert_eq!(entry.action, "message.approve");
+        assert_eq!(entry.actor_type, AuditActorType::Operator);
+        assert_eq!(entry.actor_label, "operator@example.com");
+        assert_eq!(entry.ip.as_deref(), Some("203.0.113.7"));
+        assert_eq!(entry.status_code, 200);
+
+        let calls = transport.calls();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].method, "GET");
+        assert_eq!(calls[0].path, "/v1/audit-logs");
+        assert_eq!(
+            calls[0].query,
+            vec![
+                ("action".to_owned(), "message.".to_owned()),
+                ("actorType".to_owned(), "operator".to_owned()),
+                (
+                    "actorUserId".to_owned(),
+                    "33333333-3333-4333-8333-333333333333".to_owned()
+                ),
+                ("cursor".to_owned(), "prev-0".to_owned()),
+                ("limit".to_owned(), "25".to_owned()),
+            ]
+        );
+        assert_eq!(calls[0].bearer.as_deref(), Some("token-123"));
+    }
+
+    #[tokio::test]
+    async fn audit_logs_omits_unset_filters() {
+        let transport = FakeTransport::with_responses(vec![ok(&audit_page_json(None))]);
+        let client = authed(transport.clone());
+
+        let page = client.audit_logs(&AuditQuery::default()).await.unwrap();
+
+        assert!(page.next_cursor.is_none());
+        assert!(transport.calls()[0].query.is_empty());
+    }
+
+    #[tokio::test]
+    async fn audit_log_target_builds_the_trail_path_and_paginates() {
+        let transport = FakeTransport::with_responses(vec![ok(&audit_page_json(Some("next-2")))]);
+        let client = authed(transport.clone());
+
+        let page = client
+            .audit_log_target(
+                "message",
+                "22222222-2222-4222-8222-222222222222",
+                Some(10),
+                Some("prev-1"),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(page.items.len(), 1);
+        assert_eq!(page.next_cursor.as_deref(), Some("next-2"));
+        let calls = transport.calls();
+        assert_eq!(
+            calls[0].path,
+            "/v1/audit-logs/targets/message/22222222-2222-4222-8222-222222222222"
+        );
+        assert_eq!(
+            calls[0].query,
+            vec![
+                ("cursor".to_owned(), "prev-1".to_owned()),
+                ("limit".to_owned(), "10".to_owned()),
+            ]
+        );
+        assert_eq!(calls[0].bearer.as_deref(), Some("token-123"));
+    }
+
+    #[tokio::test]
+    async fn audit_logs_requires_authentication() {
+        let transport = FakeTransport::with_responses(vec![]);
+        let client =
+            OperatorClient::with_transport(transport.clone(), StaticTokenProvider::anonymous());
+
+        let err = client.audit_logs(&AuditQuery::default()).await.unwrap_err();
+
+        assert!(matches!(err, OperatorError::Unauthenticated));
+        assert!(transport.calls().is_empty());
     }
 
     #[tokio::test]

@@ -9,6 +9,7 @@
 
 pub mod admin;
 pub mod ai;
+pub mod audit;
 pub mod booth;
 pub mod common;
 pub mod event;
@@ -27,6 +28,7 @@ pub use ai::{
     AiProvider, Moderation, ModerationRecommendation, Transcription, TranscriptionList,
     TranscriptionStatus,
 };
+pub use audit::{AuditActorType, AuditLogEntry, AuditLogPage, AuditQuery};
 pub use booth::{BoothState, BoothStatus, RuntimeMode, StatusHistory, StatusUpdate};
 pub use common::AudioRef;
 pub use event::{BoothEvent, BoothEventList, BoothEventRecord, BoothEventType};
