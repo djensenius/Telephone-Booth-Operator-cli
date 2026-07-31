@@ -133,6 +133,30 @@ pub struct BoothTailscaleStats {
     pub exit_node: Option<String>,
 }
 
+/// Linux PWM cooling-fan command and optional tachometer feedback.
+///
+/// Commanded state describes what the kernel requested. Only [`Self::rpm`]
+/// confirms measured rotor speed.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BoothFanStats {
+    /// Whether the current PWM command asks the fan to run.
+    #[serde(default)]
+    pub commanded_on: Option<bool>,
+    /// Requested PWM duty ratio in `0.0..=1.0`.
+    #[serde(default)]
+    pub pwm_ratio: Option<f64>,
+    /// Measured fan speed in revolutions per minute.
+    #[serde(default)]
+    pub rpm: Option<u32>,
+    /// Active thermal cooling state.
+    #[serde(default)]
+    pub cooling_state: Option<u32>,
+    /// Highest thermal cooling state supported by the driver.
+    #[serde(default)]
+    pub max_cooling_state: Option<u32>,
+}
+
 /// The six Raspberry Pi throttling flags (`vcgencmd get_throttled`).
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -188,6 +212,9 @@ pub struct BoothSystemSnapshot {
     /// Tailscale stats.
     #[serde(default)]
     pub tailscale: Option<BoothTailscaleStats>,
+    /// PWM cooling-fan command and optional tachometer feedback.
+    #[serde(default)]
+    pub fan: Option<BoothFanStats>,
     /// Pi throttling flags.
     #[serde(default)]
     pub throttling: Option<BoothThrottlingFlags>,
