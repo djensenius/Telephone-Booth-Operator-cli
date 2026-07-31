@@ -2122,7 +2122,7 @@ fn push_host_lines(lines: &mut Vec<Line<'static>>, theme: &Theme, snapshot: &Boo
                 || command.to_owned(),
                 |ratio| format!("{command} ({} PWM)", format_ratio(ratio)),
             );
-            lines.push(kv_line(theme, "Fan command:", value));
+            lines.push(kv_line(theme, "Fan command: ", value));
         }
         if let Some(state) = fan.cooling_state {
             let value = fan
@@ -3486,7 +3486,7 @@ mod tests {
             ..BoothSystemSnapshot::default()
         });
 
-        assert!(text.contains("Fan command:on (67% PWM)"), "{text}");
+        assert!(text.contains("Fan command: on (67% PWM)"), "{text}");
         assert!(text.contains("Fan state:  2 / 3"), "{text}");
         assert!(text.contains("Fan speed:  4250 RPM measured"), "{text}");
     }
@@ -3502,7 +3502,7 @@ mod tests {
             ..BoothSystemSnapshot::default()
         });
 
-        assert!(text.contains("Fan command:on (34% PWM)"), "{text}");
+        assert!(text.contains("Fan command: on (34% PWM)"), "{text}");
         assert!(text.contains("Fan speed:  — (no tachometer)"), "{text}");
     }
 
