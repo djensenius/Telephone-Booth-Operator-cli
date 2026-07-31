@@ -43,9 +43,9 @@ pub use stats::{
     StatsHourlyBucket, StatsOverview, StatsTopQuestion, StatsWindow,
 };
 pub use system::{
-    BoothAudioStats, BoothCpuStats, BoothDiskStats, BoothMemoryStats, BoothNetworkStats,
-    BoothProcessStats, BoothSystemSnapshot, BoothSystemSnapshotEnvelope, BoothSystemSnapshotList,
-    BoothTailscaleStats, BoothThrottlingFlags,
+    BoothAudioStats, BoothCpuStats, BoothDiskStats, BoothFanStats, BoothMemoryStats,
+    BoothNetworkStats, BoothProcessStats, BoothSystemSnapshot, BoothSystemSnapshotEnvelope,
+    BoothSystemSnapshotList, BoothTailscaleStats, BoothThrottlingFlags,
 };
 pub use token::{ApiToken, ApiTokenCreated, ApiTokenUsageBucket, CreateApiTokenRequest};
 pub use upload::{UploadSasKind, UploadSasRequest, UploadSlot};

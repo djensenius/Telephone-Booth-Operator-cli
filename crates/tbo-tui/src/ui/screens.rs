@@ -2111,6 +2111,39 @@ fn push_host_lines(lines: &mut Vec<Line<'static>>, theme: &Theme, snapshot: &Boo
         );
         lines.push(kv_line(theme, "Tailscale: ", value));
     }
+    if let Some(fan) = &snapshot.fan {
+        if fan.commanded_on.is_some() || fan.pwm_ratio.is_some() {
+            let command = match fan.commanded_on {
+                Some(true) => "on",
+                Some(false) => "off",
+                None => "unknown",
+            };
+            let value = fan.pwm_ratio.map_or_else(
+                || command.to_owned(),
+                |ratio| format!("{command} ({} PWM)", format_ratio(ratio)),
+            );
+            lines.push(kv_line(theme, "Fan command: ", value));
+        }
+        if let Some(state) = fan.cooling_state {
+            let value = fan
+                .max_cooling_state
+                .map_or_else(|| state.to_string(), |max| format!("{state} / {max}"));
+            lines.push(kv_line(theme, "Fan state:  ", value));
+        }
+        if let Some(rpm) = fan.rpm {
+            lines.push(kv_line(
+                theme,
+                "Fan speed:  ",
+                format!("{rpm} RPM measured"),
+            ));
+        } else {
+            lines.push(kv_line(
+                theme,
+                "Fan speed:  ",
+                "— (no tachometer)".to_owned(),
+            ));
+        }
+    }
     if let Some(throttling) = &snapshot.throttling {
         let mut flags = Vec::new();
         if throttling.undervoltage == Some(true) {
@@ -3390,10 +3423,10 @@ fn format_expiry(expires_at: Option<OffsetDateTime>) -> String {
 mod tests {
     use super::{
         Screen, Theme, event_detail_lines, event_type_color, format_bytes, format_millis_f64,
-        format_uptime, percent, percent_bar, push_payload_lines, push_status_detail, ratio_block,
-        ratio_of, short_fingerprint, sparkline,
+        format_uptime, percent, percent_bar, push_host_lines, push_payload_lines,
+        push_status_detail, ratio_block, ratio_of, short_fingerprint, sparkline,
     };
-    use tbo_core::domain::BoothEventType;
+    use tbo_core::domain::{BoothEventType, BoothFanStats, BoothSystemSnapshot};
     use tbo_core::domain::{BoothState, BoothStatus};
     use time::{Duration, OffsetDateTime};
 
@@ -3423,6 +3456,54 @@ mod tests {
             first_seen_at: None,
             repeat_count: None,
         }
+    }
+
+    fn host_lines_text(snapshot: &BoothSystemSnapshot) -> String {
+        let mut lines = Vec::new();
+        push_host_lines(&mut lines, &Theme::default(), snapshot);
+        lines
+            .iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn fan_lines_distinguish_command_from_measured_speed() {
+        let text = host_lines_text(&BoothSystemSnapshot {
+            fan: Some(BoothFanStats {
+                commanded_on: Some(true),
+                pwm_ratio: Some(0.67),
+                rpm: Some(4250),
+                cooling_state: Some(2),
+                max_cooling_state: Some(3),
+            }),
+            ..BoothSystemSnapshot::default()
+        });
+
+        assert!(text.contains("Fan command: on (67% PWM)"), "{text}");
+        assert!(text.contains("Fan state:  2 / 3"), "{text}");
+        assert!(text.contains("Fan speed:  4250 RPM measured"), "{text}");
+    }
+
+    #[test]
+    fn fan_lines_report_missing_tachometer_feedback() {
+        let text = host_lines_text(&BoothSystemSnapshot {
+            fan: Some(BoothFanStats {
+                commanded_on: Some(true),
+                pwm_ratio: Some(0.34),
+                ..BoothFanStats::default()
+            }),
+            ..BoothSystemSnapshot::default()
+        });
+
+        assert!(text.contains("Fan command: on (34% PWM)"), "{text}");
+        assert!(text.contains("Fan speed:  — (no tachometer)"), "{text}");
     }
 
     #[test]
