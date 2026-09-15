@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.7.0](https://github.com/djensenius/Telephone-Booth-Operator-cli/compare/v0.6.1...v0.7.0) (2026-09-15)
+
+
+### Features
+
+* distinguish expected downtime between exhibitions ([5509885](https://github.com/djensenius/Telephone-Booth-Operator-cli/commit/550988548d41e5a31899e7685207342d87961ed5))
+* distinguish expected downtime between exhibitions ([#109](https://github.com/djensenius/Telephone-Booth-Operator-cli/issues/109)) ([d75866c](https://github.com/djensenius/Telephone-Booth-Operator-cli/commit/d75866c7d0ca14061fb6d5f73267d70ea925d24a))
+* show cooling fan telemetry ([#106](https://github.com/djensenius/Telephone-Booth-Operator-cli/issues/106)) ([c1797ec](https://github.com/djensenius/Telephone-Booth-Operator-cli/commit/c1797ecc7abb1d371d6f9d4498d14f7b9afa75e2))
+* **tui:** add an Audit Log screen for write actions ([#103](https://github.com/djensenius/Telephone-Booth-Operator-cli/issues/103)) ([e800607](https://github.com/djensenius/Telephone-Booth-Operator-cli/commit/e800607e588e643146cd0aa853e05c096937f3a1))
+
+
+### Bug Fixes
+
+* avoid duplicate initial status failures and clarify polling ([fab331b](https://github.com/djensenius/Telephone-Booth-Operator-cli/commit/fab331b57f96109165e8148f056810eccd94f174))
+
 ## [0.6.1](https://github.com/djensenius/Telephone-Booth-Operator-cli/compare/v0.6.0...v0.6.1) (2026-07-29)
 
 
