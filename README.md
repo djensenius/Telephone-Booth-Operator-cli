@@ -25,6 +25,11 @@ issues and milestones for any remaining polish.
 - **Operator console** (via the Authentik-secured operator API):
   status, messages (moderation, translation, transcription, playback),
   questions, events (live tail), sessions, stats, API tokens.
+- **Between exhibitions**: an explicit inactive installation is displayed as
+  expected downtime, not a booth fault. Start the next installation in the web
+  operator console to resume calls. Status polling preserves lifecycle even on
+  synthetic placeholders; API failures remain visible. Older servers without
+  the lifecycle field retain their existing behavior.
 - **System health (`btm` style)**: live CPU / load / memory / disk / network /
   temperature / uptime charts scraped from the booth's `/metrics`.
 - **Debug panel**: live state, GPIO, audio meters, logs, config, and event

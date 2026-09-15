@@ -29,7 +29,9 @@ pub use ai::{
     TranscriptionStatus,
 };
 pub use audit::{AuditActorType, AuditLogEntry, AuditLogPage, AuditQuery};
-pub use booth::{BoothState, BoothStatus, RuntimeMode, StatusHistory, StatusUpdate};
+pub use booth::{
+    BoothState, BoothStatus, InstallationState, RuntimeMode, StatusHistory, StatusUpdate,
+};
 pub use common::AudioRef;
 pub use event::{BoothEvent, BoothEventList, BoothEventRecord, BoothEventType};
 pub use message::{

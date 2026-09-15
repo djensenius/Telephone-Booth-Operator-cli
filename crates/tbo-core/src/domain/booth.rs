@@ -43,10 +43,29 @@ pub enum RuntimeMode {
     Simulator,
 }
 
+/// Operator-controlled exhibition lifecycle, independent of connectivity.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InstallationState {
+    /// An operator has explicitly started an exhibition.
+    Active,
+    /// No exhibition is active; booth offline is expected.
+    BetweenExhibitions,
+    /// A future server lifecycle that this client cannot interpret.
+    #[serde(other)]
+    Unknown,
+}
+
 /// Live booth status as returned by `GET /v1/status`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BoothStatus {
+    /// Exhibition lifecycle, independent of booth heartbeat age.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub installation_state: Option<InstallationState>,
+    /// A placeholder is not a heartbeat, even if it conveys a lifecycle change.
+    #[serde(default)]
+    pub is_synthetic: bool,
     /// Current call-flow state.
     pub state: BoothState,
     /// When this status was last updated (server clock).

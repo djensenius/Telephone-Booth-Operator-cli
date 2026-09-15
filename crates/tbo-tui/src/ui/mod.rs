@@ -56,7 +56,7 @@ fn render_header(app: &App, frame: &mut Frame, area: Rect) {
     let screen = app.screen();
     let prev = app.prev_screen();
     let next = app.next_screen();
-    let line = Line::from(vec![
+    let mut line = Line::from(vec![
         Span::styled(
             format!("{} {} ", prev.nav_key(), prev.short()),
             Style::new().fg(theme.dim),
@@ -79,6 +79,17 @@ fn render_header(app: &App, frame: &mut Frame, area: Rect) {
         ),
         Span::styled("  ? screens", Style::new().fg(theme.dim)),
     ]);
+    if app.status().between_exhibitions() {
+        line.spans.push(Span::styled(
+            "  Between exhibitions (offline expected)",
+            Style::new().fg(theme.dim),
+        ));
+    } else if app.status().last_error().is_some() {
+        line.spans.push(Span::styled(
+            "  Operator API unavailable",
+            Style::new().fg(theme.error),
+        ));
+    }
     let header = Paragraph::new(line).block(
         Block::bordered()
             .border_style(Style::new().fg(theme.dim))
