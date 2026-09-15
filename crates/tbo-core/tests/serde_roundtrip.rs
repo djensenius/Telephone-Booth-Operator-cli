@@ -6,8 +6,8 @@ use time::OffsetDateTime;
 
 use tbo_core::config::{Config, DEFAULT_OPERATOR_BASE_URL};
 use tbo_core::domain::{
-    BoothState, BoothStatus, CallSessionDetail, Message, MessageStatus, RuntimeMode, StatsOverview,
-    StatsWindow, WsEnvelope,
+    BoothState, BoothStatus, BoothSystemSnapshot, CallSessionDetail, Message, MessageStatus,
+    RuntimeMode, StatsOverview, StatsWindow, WsEnvelope,
 };
 
 #[test]
@@ -189,6 +189,26 @@ fn ws_envelope_is_tagged_by_kind() {
         }
         other => panic!("expected system frame, got {other:?}"),
     }
+}
+
+#[test]
+fn system_snapshot_decodes_fan_command_and_tachometer_feedback() {
+    let json = r#"{
+        "fan": {
+            "commandedOn": true,
+            "pwmRatio": 0.67,
+            "rpm": 4250,
+            "coolingState": 2,
+            "maxCoolingState": 3
+        }
+    }"#;
+    let snapshot: BoothSystemSnapshot = serde_json::from_str(json).unwrap();
+    let fan = snapshot.fan.expect("fan telemetry present");
+    assert_eq!(fan.commanded_on, Some(true));
+    assert_eq!(fan.pwm_ratio, Some(0.67));
+    assert_eq!(fan.rpm, Some(4250));
+    assert_eq!(fan.cooling_state, Some(2));
+    assert_eq!(fan.max_cooling_state, Some(3));
 }
 
 #[test]
