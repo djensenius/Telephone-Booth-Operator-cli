@@ -3194,7 +3194,9 @@ fn status_lines(app: &App, theme: &Theme) -> Vec<Line<'static>> {
     if app.status().is_refreshing() {
         lines.push(note_line(theme, "Refreshing…".to_owned()));
     }
-    if let Some(error) = app.status().last_error() {
+    if let Some(error) = app.status().last_error()
+        && !matches!(app.status().state(), Remote::Failed { .. })
+    {
         lines.push(Line::from(Span::styled(
             format!("Operator API unavailable: {error}"),
             Style::new().fg(theme.error),

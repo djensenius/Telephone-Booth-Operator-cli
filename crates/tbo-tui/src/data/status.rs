@@ -12,7 +12,7 @@ use tbo_operator_client::{HttpTransport, OperatorClient, ReqwestTransport, Token
 
 use crate::data::{Remote, SessionTokenProvider};
 
-/// How often the Status screen auto-refreshes while focused.
+/// How often booth lifecycle is reconciled on every screen.
 const POLL_INTERVAL: Duration = Duration::from_secs(5);
 /// Initial delay before reconnecting the live status socket.
 const WS_RECONNECT_INITIAL: Duration = Duration::from_secs(1);
@@ -21,9 +21,9 @@ const WS_RECONNECT_MAX: Duration = Duration::from_secs(30);
 
 /// Tracks booth status off the UI thread and keeps the latest value.
 ///
-/// `refresh` spawns the backup REST poll on the `tokio` runtime; `tick` starts
-/// a bearer-authenticated live WebSocket while the screen is focused and also
-/// keeps the REST poll running on a fixed cadence to fill gaps.
+/// `refresh` spawns the REST poll on the `tokio` runtime; `tick` starts a
+/// bearer-authenticated live WebSocket while the screen is focused and keeps
+/// lifecycle polling running on every screen.
 pub struct StatusController<T = ReqwestTransport, A = SessionTokenProvider>
 where
     T: HttpTransport + Clone + 'static,
@@ -127,8 +127,8 @@ where
         }
     }
 
-    /// Advance the controller: apply results, then auto-refresh when the screen
-    /// is `focused` and the poll interval has elapsed.
+    /// Apply results and auto-refresh on every screen when the poll is due.
+    /// `focused` controls only startup of the live status socket.
     pub fn tick(&mut self, focused: bool) {
         self.drain();
         if focused {
