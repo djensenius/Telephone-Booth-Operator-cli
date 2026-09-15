@@ -3161,11 +3161,33 @@ fn status_lines(app: &App, theme: &Theme) -> Vec<Line<'static>> {
     if app.status().is_refreshing() {
         lines.push(note_line(theme, "Refreshing…".to_owned()));
     }
+    if let Some(error) = app.status().last_error() {
+        lines.push(Line::from(Span::styled(
+            format!("Operator API unavailable: {error}"),
+            Style::new().fg(theme.error),
+        )));
+    }
     lines
 }
 
 /// Append the detail rows for a loaded [`BoothStatus`].
 fn push_status_detail(lines: &mut Vec<Line<'static>>, theme: &Theme, status: &BoothStatus) {
+    if status.installation_state == Some(tbo_core::domain::InstallationState::BetweenExhibitions) {
+        lines.push(kv_line(
+            theme,
+            "Exhibition:   ",
+            "Between exhibitions".to_owned(),
+        ));
+        lines.push(hint_line(
+            theme,
+            "Offline is expected. Start the next installation to resume calls.",
+        ));
+        return;
+    }
+    if status.is_synthetic {
+        lines.push(hint_line(theme, "Awaiting the first booth status."));
+        return;
+    }
     lines.push(Line::from(vec![
         Span::styled("State:        ", Style::new().fg(theme.dim)),
         Span::styled(
@@ -3414,6 +3436,8 @@ mod tests {
 
     fn idle_status() -> BoothStatus {
         BoothStatus {
+            installation_state: None,
+            is_synthetic: false,
             state: BoothState::Idle,
             updated_at: OffsetDateTime::UNIX_EPOCH + Duration::minutes(10),
             current_question_id: None,
@@ -3423,6 +3447,19 @@ mod tests {
             first_seen_at: None,
             repeat_count: None,
         }
+    }
+
+    #[test]
+    fn between_exhibitions_is_neutral_and_does_not_display_epoch_heartbeat() {
+        let text = status_detail_text(&BoothStatus {
+            installation_state: Some(tbo_core::domain::InstallationState::BetweenExhibitions),
+            is_synthetic: true,
+            ..idle_status()
+        });
+        assert!(text.contains("Between exhibitions"));
+        assert!(text.contains("Offline is expected"));
+        assert!(!text.contains("Updated:"));
+        assert!(!text.contains("State:"));
     }
 
     #[test]

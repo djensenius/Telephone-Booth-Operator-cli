@@ -20,6 +20,8 @@ fn booth_status_decodes_camel_case_enum() {
     }"#;
     let status: BoothStatus = serde_json::from_str(json).unwrap();
     assert_eq!(status.state, BoothState::PlayingQuestion);
+    assert!(status.installation_state.is_none());
+    assert!(!status.is_synthetic);
     assert_eq!(status.runtime_mode, Some(RuntimeMode::Simulator));
     assert_eq!(
         status.current_question_id.as_deref(),
@@ -31,6 +33,20 @@ fn booth_status_decodes_camel_case_enum() {
     let round = serde_json::to_string(&status).unwrap();
     assert!(round.contains("\"playingQuestion\""));
     assert!(round.contains("\"updatedAt\""));
+}
+
+#[test]
+fn booth_status_decodes_between_exhibitions_without_a_real_heartbeat() {
+    let status: BoothStatus = serde_json::from_str(
+        r#"{"state":"idle","updatedAt":"1970-01-01T00:00:00Z","isSynthetic":true,"installationState":"between_exhibitions"}"#,
+    ).unwrap();
+    assert_eq!(
+        status.installation_state,
+        Some(tbo_core::domain::InstallationState::BetweenExhibitions)
+    );
+    assert!(status.is_synthetic);
+    let encoded = serde_json::to_string(&status).unwrap();
+    assert!(encoded.contains("\"installationState\":\"between_exhibitions\""));
 }
 
 #[test]

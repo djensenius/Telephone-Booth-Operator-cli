@@ -7,7 +7,7 @@ use tokio::sync::mpsc::error::TryRecvError;
 use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
 use tracing::warn;
 
-use tbo_core::domain::{BoothStatus, WsEnvelope};
+use tbo_core::domain::{BoothStatus, InstallationState, WsEnvelope};
 use tbo_operator_client::{HttpTransport, OperatorClient, ReqwestTransport, TokenProvider};
 
 use crate::data::{Remote, SessionTokenProvider};
@@ -35,6 +35,7 @@ where
     live_rx: Option<UnboundedReceiver<BoothStatus>>,
     in_flight: bool,
     last_refresh: Option<Instant>,
+    last_error: Option<String>,
 }
 
 impl<T, A> StatusController<T, A>
@@ -51,6 +52,7 @@ where
             live_rx: None,
             in_flight: false,
             last_refresh: None,
+            last_error: None,
         }
     }
 
@@ -64,6 +66,19 @@ where
     #[must_use]
     pub fn is_refreshing(&self) -> bool {
         self.in_flight
+    }
+
+    /// Latest REST failure, even when a previously loaded status is retained.
+    pub fn last_error(&self) -> Option<&str> {
+        self.last_error.as_deref()
+    }
+
+    /// Whether recent API reconciliation explicitly confirms expected downtime.
+    #[must_use]
+    pub fn between_exhibitions(&self) -> bool {
+        self.last_error.is_none()
+            && matches!(&self.state, Remote::Ready { value, .. }
+            if value.installation_state == Some(InstallationState::BetweenExhibitions))
     }
 
     /// Trigger a status fetch unless one is already in flight.
@@ -118,9 +133,9 @@ where
         self.drain();
         if focused {
             self.ensure_live();
-            if self.is_due(Instant::now()) {
-                self.refresh();
-            }
+        }
+        if self.is_due(Instant::now()) {
+            self.refresh();
         }
     }
 
@@ -196,8 +211,22 @@ where
         self.last_refresh = Some(now);
         self.rx = None;
         match result {
-            Ok(value) => self.apply_status(value, now),
+            Ok(value) => {
+                self.last_error = None;
+                if let Remote::Ready { value: current, .. } = &mut self.state {
+                    current.installation_state = value.installation_state;
+                }
+                if value.is_synthetic {
+                    self.state = Remote::Ready {
+                        value,
+                        fetched_at: now,
+                    };
+                    return;
+                }
+                self.apply_status(value, now);
+            }
             Err(error) => {
+                self.last_error = Some(error.clone());
                 if !matches!(self.state, Remote::Ready { .. }) {
                     self.state = Remote::Failed { error, at: now };
                 }
@@ -206,11 +235,17 @@ where
     }
 
     /// Apply a status update when it is not older than the visible value.
-    fn apply_status(&mut self, value: BoothStatus, fetched_at: Instant) {
-        if let Remote::Ready { value: current, .. } = &self.state
-            && value.updated_at < current.updated_at
-        {
-            return;
+    fn apply_status(&mut self, mut value: BoothStatus, fetched_at: Instant) {
+        if let Remote::Ready { value: current, .. } = &self.state {
+            if value.installation_state.is_none() {
+                if current.installation_state == Some(InstallationState::BetweenExhibitions) {
+                    return;
+                }
+                value.installation_state = current.installation_state;
+            }
+            if value.updated_at < current.updated_at {
+                return;
+            }
         }
         self.state = Remote::Ready { value, fetched_at };
     }
@@ -347,6 +382,57 @@ mod tests {
             controller.state(),
             Remote::Ready { value, .. } if value.state == BoothState::Recording
         ));
+    }
+
+    #[test]
+    fn lifecycle_poll_overrides_newer_heartbeat_and_resumes_without_reboot() {
+        let mut controller = controller(500, "boom");
+        controller.apply_status(
+            booth_status(BoothState::Recording, "2026-01-01T00:00:02Z"),
+            Instant::now(),
+        );
+        let mut inactive = booth_status(BoothState::Idle, "1970-01-01T00:00:00Z");
+        inactive.installation_state = Some(InstallationState::BetweenExhibitions);
+        inactive.is_synthetic = true;
+        controller.apply(Ok(inactive.clone()));
+        controller.apply_status(
+            booth_status(BoothState::Recording, "2026-01-01T00:00:03Z"),
+            Instant::now(),
+        );
+        assert!(matches!(controller.state(), Remote::Ready { value, .. }
+            if value == &inactive));
+        controller.apply(Err("API unreachable".to_owned()));
+        assert_eq!(controller.last_error(), Some("API unreachable"));
+
+        let mut active = inactive;
+        active.installation_state = Some(InstallationState::Active);
+        controller.apply(Ok(active));
+        controller.apply_status(
+            booth_status(BoothState::Idle, "2026-01-01T00:00:04Z"),
+            Instant::now(),
+        );
+        assert!(controller.last_error().is_none());
+        assert!(matches!(controller.state(), Remote::Ready { value, .. }
+            if value.installation_state == Some(InstallationState::Active) && !value.is_synthetic));
+    }
+
+    #[test]
+    fn legacy_rest_clears_inactive_lifecycle_and_accepts_live_status() {
+        let mut controller = controller(500, "boom");
+        let mut inactive = booth_status(BoothState::Idle, "1970-01-01T00:00:00Z");
+        inactive.installation_state = Some(InstallationState::BetweenExhibitions);
+        inactive.is_synthetic = true;
+        controller.apply(Ok(inactive));
+        assert!(controller.between_exhibitions());
+
+        controller.apply(Ok(booth_status(BoothState::Idle, "2026-01-01T00:00:01Z")));
+        assert!(!controller.between_exhibitions());
+        controller.apply_status(
+            booth_status(BoothState::Recording, "2026-01-01T00:00:02Z"),
+            Instant::now(),
+        );
+        assert!(matches!(controller.state(), Remote::Ready { value, .. }
+            if value.installation_state.is_none() && value.state == BoothState::Recording));
     }
 
     #[tokio::test]
