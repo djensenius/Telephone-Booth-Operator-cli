@@ -212,6 +212,51 @@ fn system_snapshot_decodes_fan_command_and_tachometer_feedback() {
 }
 
 #[test]
+fn system_snapshot_decodes_and_round_trips_shelly_telemetry() {
+    let json = r#"{
+        "shelly": [{
+            "device": "heater-plug",
+            "endpoint": "switch:0",
+            "outputOn": true,
+            "powerWatts": 42.5,
+            "voltageVolts": 119.7,
+            "frequencyHertz": 59.9,
+            "currentAmperes": 0.36,
+            "energyWattHours": 1234.5,
+            "temperatureCelsius": 31.2,
+            "fetchedAtUnixSeconds": 1717243200
+        }]
+    }"#;
+    let snapshot: BoothSystemSnapshot = serde_json::from_str(json).unwrap();
+    let shelly = snapshot.shelly.as_ref().expect("shelly telemetry present");
+    assert_eq!(shelly.len(), 1);
+    let plug = &shelly[0];
+    assert_eq!(plug.device.as_deref(), Some("heater-plug"));
+    assert_eq!(plug.endpoint.as_deref(), Some("switch:0"));
+    assert_eq!(plug.output_on, Some(true));
+    assert_eq!(plug.power_watts, Some(42.5));
+    assert_eq!(plug.voltage_volts, Some(119.7));
+    assert_eq!(plug.frequency_hertz, Some(59.9));
+    assert_eq!(plug.current_amperes, Some(0.36));
+    assert_eq!(plug.energy_watt_hours, Some(1234.5));
+    assert_eq!(plug.temperature_celsius, Some(31.2));
+    assert_eq!(plug.fetched_at_unix_seconds, Some(1_717_243_200));
+
+    let encoded = serde_json::to_string(&snapshot).unwrap();
+    assert!(encoded.contains("\"shelly\""));
+    assert!(encoded.contains("\"outputOn\":true"));
+    assert!(encoded.contains("\"powerWatts\":42.5"));
+    assert!(encoded.contains("\"fetchedAtUnixSeconds\":1717243200"));
+}
+
+#[test]
+fn system_snapshot_omits_shelly_for_older_payloads() {
+    let snapshot: BoothSystemSnapshot =
+        serde_json::from_str(r#"{"cpu":{"usageRatio":0.25}}"#).unwrap();
+    assert!(snapshot.shelly.is_none());
+}
+
+#[test]
 fn stats_window_query_and_serde() {
     assert_eq!(StatsWindow::Day.as_query(), "24h");
     assert_eq!(StatsWindow::All.as_query(), "all");

@@ -23,10 +23,10 @@ use tbo_booth_client::{GpioPinSnapshot, LogEntry};
 use tbo_core::config::BoothConfig;
 use tbo_core::domain::{
     ApiToken, ApiTokenCreated, ApiTokenUsageBucket, AuditLogEntry, BoothEventRecord,
-    BoothEventType, BoothState, BoothStatus, BoothSystemSnapshot, BoothSystemSnapshotEnvelope,
-    CallOutcome, CallSession, CallSessionDetail, Message, MessageStatus, Moderation,
-    ModerationRecommendation, Question, QuestionStatus, RuntimeMode, StatsOverview, StatsWindow,
-    Transcription, TranscriptionStatus,
+    BoothEventType, BoothShellyStats, BoothState, BoothStatus, BoothSystemSnapshot,
+    BoothSystemSnapshotEnvelope, CallOutcome, CallSession, CallSessionDetail, Message,
+    MessageStatus, Moderation, ModerationRecommendation, Question, QuestionStatus, RuntimeMode,
+    StatsOverview, StatsWindow, Transcription, TranscriptionStatus,
 };
 use tbo_metrics::{BoothMetrics, MetricsHistory};
 
@@ -1954,6 +1954,7 @@ fn push_system_envelope(
     push_memory_lines(lines, theme, snapshot);
     push_disk_lines(lines, theme, snapshot);
     push_network_lines(lines, theme, snapshot);
+    push_shelly_lines(lines, theme, snapshot);
     push_host_lines(lines, theme, snapshot);
 }
 
@@ -2085,6 +2086,41 @@ fn push_network_lines(
     }
 }
 
+/// Shelly heater relay and power-draw lines.
+fn push_shelly_lines(
+    lines: &mut Vec<Line<'static>>,
+    theme: &Theme,
+    snapshot: &BoothSystemSnapshot,
+) {
+    let Some(readings) = &snapshot.shelly else {
+        return;
+    };
+    for reading in readings {
+        let mut parts = vec![shelly_heater_state(reading).to_owned()];
+        if let Some(output_on) = reading.output_on {
+            parts.push(format!("relay {}", if output_on { "on" } else { "off" }));
+        }
+        if let Some(power) = finite_f64(reading.power_watts) {
+            parts.push(format!("{power:.1} W"));
+        }
+        if let Some(current) = finite_f64(reading.current_amperes) {
+            let value = finite_f64(reading.voltage_volts).map_or_else(
+                || format!("{current:.2} A"),
+                |voltage| format!("{current:.2} A @ {voltage:.1} V"),
+            );
+            parts.push(value);
+        } else if let Some(voltage) = finite_f64(reading.voltage_volts) {
+            parts.push(format!("{voltage:.1} V"));
+        }
+        let details = parts.join(" · ");
+        let value = match shelly_reading_label(reading) {
+            Some(label) => format!("{label}: {details}"),
+            None => details,
+        };
+        lines.push(kv_line(theme, "Heater:   ", value));
+    }
+}
+
 /// Uptime, process, audio, Tailscale, and throttling lines.
 fn push_host_lines(lines: &mut Vec<Line<'static>>, theme: &Theme, snapshot: &BoothSystemSnapshot) {
     if let Some(uptime) = snapshot.uptime_seconds {
@@ -2168,6 +2204,36 @@ fn push_host_lines(lines: &mut Vec<Line<'static>>, theme: &Theme, snapshot: &Boo
             ]));
         }
     }
+}
+
+/// Heater state inferred from instantaneous power draw.
+fn shelly_heater_state(reading: &BoothShellyStats) -> &'static str {
+    match finite_f64(reading.power_watts) {
+        Some(power) if power > 0.0 => "heating",
+        Some(_) => "off",
+        None => "unknown",
+    }
+}
+
+/// Human-friendly source label for a Shelly reading.
+fn shelly_reading_label(reading: &BoothShellyStats) -> Option<String> {
+    match (
+        reading.device.as_deref().filter(|value| !value.is_empty()),
+        reading
+            .endpoint
+            .as_deref()
+            .filter(|value| !value.is_empty()),
+    ) {
+        (Some(device), Some(endpoint)) => Some(format!("{device}/{endpoint}")),
+        (Some(device), None) => Some(device.to_owned()),
+        (None, Some(endpoint)) => Some(endpoint.to_owned()),
+        (None, None) => None,
+    }
+}
+
+/// Finite numeric telemetry only; invalid readings are treated as unknown.
+fn finite_f64(value: Option<f64>) -> Option<f64> {
+    value.filter(|value| value.is_finite())
 }
 
 /// Format a CPU load average, or `—` when absent.
@@ -3448,9 +3514,9 @@ mod tests {
     use super::{
         Screen, Theme, event_detail_lines, event_type_color, format_bytes, format_millis_f64,
         format_uptime, percent, percent_bar, push_host_lines, push_payload_lines,
-        push_status_detail, ratio_block, ratio_of, short_fingerprint, sparkline,
+        push_shelly_lines, push_status_detail, ratio_block, ratio_of, short_fingerprint, sparkline,
     };
-    use tbo_core::domain::{BoothEventType, BoothFanStats, BoothSystemSnapshot};
+    use tbo_core::domain::{BoothEventType, BoothFanStats, BoothShellyStats, BoothSystemSnapshot};
     use tbo_core::domain::{BoothState, BoothStatus};
     use time::{Duration, OffsetDateTime};
 
@@ -3497,6 +3563,63 @@ mod tests {
             })
             .collect::<Vec<_>>()
             .join("\n")
+    }
+
+    fn shelly_lines_text(snapshot: &BoothSystemSnapshot) -> String {
+        let mut lines = Vec::new();
+        push_shelly_lines(&mut lines, &Theme::default(), snapshot);
+        lines
+            .iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn shelly_lines_show_heater_power_draw() {
+        let text = shelly_lines_text(&BoothSystemSnapshot {
+            shelly: Some(vec![BoothShellyStats {
+                device: Some("heater-plug".to_owned()),
+                endpoint: Some("switch:0".to_owned()),
+                output_on: Some(true),
+                power_watts: Some(42.5),
+                voltage_volts: Some(119.7),
+                current_amperes: Some(0.36),
+                ..BoothShellyStats::default()
+            }]),
+            ..BoothSystemSnapshot::default()
+        });
+
+        assert!(
+            text.contains(
+                "Heater:   heater-plug/switch:0: heating · relay on · 42.5 W · 0.36 A @ 119.7 V"
+            ),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn shelly_lines_treat_zero_watts_as_off_even_when_relay_is_on() {
+        let text = shelly_lines_text(&BoothSystemSnapshot {
+            shelly: Some(vec![BoothShellyStats {
+                device: Some("heater-plug".to_owned()),
+                output_on: Some(true),
+                power_watts: Some(0.0),
+                current_amperes: Some(0.0),
+                ..BoothShellyStats::default()
+            }]),
+            ..BoothSystemSnapshot::default()
+        });
+
+        assert!(
+            text.contains("Heater:   heater-plug: off · relay on · 0.0 W · 0.00 A"),
+            "{text}"
+        );
     }
 
     #[test]

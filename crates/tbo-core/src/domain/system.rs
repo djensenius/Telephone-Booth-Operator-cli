@@ -181,6 +181,42 @@ pub struct BoothThrottlingFlags {
     pub throttled_occurred: Option<bool>,
 }
 
+/// Shelly relay/power telemetry for heater monitoring.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BoothShellyStats {
+    /// Device identifier or address reported by the booth.
+    #[serde(default)]
+    pub device: Option<String>,
+    /// Shelly endpoint, such as `switch:0`.
+    #[serde(default)]
+    pub endpoint: Option<String>,
+    /// Whether the Shelly relay output is commanded on.
+    #[serde(default)]
+    pub output_on: Option<bool>,
+    /// Instantaneous real power draw in watts.
+    #[serde(default)]
+    pub power_watts: Option<f64>,
+    /// Line voltage in volts.
+    #[serde(default)]
+    pub voltage_volts: Option<f64>,
+    /// AC frequency in hertz.
+    #[serde(default)]
+    pub frequency_hertz: Option<f64>,
+    /// Instantaneous current draw in amperes.
+    #[serde(default)]
+    pub current_amperes: Option<f64>,
+    /// Cumulative energy consumed in watt-hours.
+    #[serde(default)]
+    pub energy_watt_hours: Option<f64>,
+    /// Device temperature in Celsius.
+    #[serde(default)]
+    pub temperature_celsius: Option<f64>,
+    /// When the booth fetched the Shelly reading, as Unix seconds.
+    #[serde(default)]
+    pub fetched_at_unix_seconds: Option<i64>,
+}
+
 /// A full live system snapshot.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -218,6 +254,9 @@ pub struct BoothSystemSnapshot {
     /// Pi throttling flags.
     #[serde(default)]
     pub throttling: Option<BoothThrottlingFlags>,
+    /// Shelly relay/power telemetry.
+    #[serde(default)]
+    pub shelly: Option<Vec<BoothShellyStats>>,
     /// How the booth is being driven.
     #[serde(default)]
     pub runtime_mode: Option<RuntimeMode>,
