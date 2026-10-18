@@ -2393,9 +2393,9 @@ dependencies = [
 
 [[package]]
 name = "rustls"
-version = "0.23.40"
+version = "0.23.46"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ef86cd5876211988985292b91c96a8f2d298df24e75989a43a3c73f2d4d8168b"
+checksum = "48e13bd8c0e9365c43cfa5c9e8f9ad49d3c8444926c9aac819e0e4dc503c8fdf"
 dependencies = [
  "log",
  "once_cell",
@@ -2418,9 +2418,9 @@ dependencies = [
 
 [[package]]
 name = "rustls-webpki"
-version = "0.103.13"
+version = "0.103.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "61c429a8649f110dddef65e2a5ad240f747e85f7758a6bccc7e5777bd33f756e"
+checksum = "f3c3cf1d8b1e7d4927e2d154c3fcb02979afb9939629c62cd9048d4f07b60ac2"
 dependencies = [
  "ring",
  "rustls-pki-types",
@@ -2810,14 +2810,14 @@ dependencies = [
 
 [[package]]
 name = "tbo-audio"
-version = "0.6.1"
+version = "0.7.0"
 dependencies = [
  "rodio",
 ]
 
 [[package]]
 name = "tbo-auth"
-version = "0.6.1"
+version = "0.7.0"
 dependencies = [
  "keyring",
  "reqwest",
@@ -2832,7 +2832,7 @@ dependencies = [
 
 [[package]]
 name = "tbo-booth-client"
-version = "0.6.1"
+version = "0.7.0"
 dependencies = [
  "futures",
  "hex",
@@ -2851,7 +2851,7 @@ dependencies = [
 
 [[package]]
 name = "tbo-core"
-version = "0.6.1"
+version = "0.7.0"
 dependencies = [
  "directories",
  "serde",
@@ -2863,11 +2863,11 @@ dependencies = [
 
 [[package]]
 name = "tbo-metrics"
-version = "0.6.1"
+version = "0.7.0"
 
 [[package]]
 name = "tbo-operator-client"
-version = "0.6.1"
+version = "0.7.0"
 dependencies = [
  "futures",
  "hex",
@@ -2889,7 +2889,7 @@ dependencies = [
 
 [[package]]
 name = "tbo-tui"
-version = "0.6.1"
+version = "0.7.0"
 dependencies = [
  "anyhow",
  "clap",
